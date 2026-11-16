@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.3.1
-// @description  局內技能與寶箱獨立允許重抽、可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
+// @version      1.4.0
+// @description  五欄補齊與均衡升級、定時停翻牌、周目遠征、結算穿裝／按品質出售、背景掛機。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.3.1';
+  const VERSION = '1.4.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -39,6 +39,8 @@
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
     skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
+    chestFillFirst: true, noFlipEnabled: false, noFlipMinutes: 10,
+    autoEquip: false, autoSell: false, sellQualities: [], expeditionLap: 1,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     lootRange: 1800, partyRoll: 'greed',
@@ -149,10 +151,16 @@
       return { ...t, danger, score: t.distance + danger };
     }).sort((a, b) => Number(a.danger > 0) - Number(b.danger > 0) || (a.danger > 0 ? a.danger - b.danger : 0) || a.priority - b.priority || a.distance - b.distance);
   }
-  function rankChest(cards, cfg) {
+  function rankChest(cards, cfg, owned = null) {
+    const known = owned !== null;
+    const level = c => Number(owned?.[c.slot]?.level) || 0;
     return cards.map(c => ({ ...c, tier: tierOf(c, cfg) })).sort((a, b) => {
+      if (cfg.chestFillFirst && known) {
+        const fill = Number(!owned[b.slot]) - Number(!owned[a.slot]);
+        if (fill) return fill;
+      }
       // 寶箱一律先遵守使用者優先級，技能用的 rarityFirst 不可覆蓋寶箱偏好。
-      return a.tier - b.tier || b.rarity - a.rarity || a.index - b.index;
+      return a.tier - b.tier || (cfg.chestFillFirst && known ? level(a) - level(b) : 0) || b.rarity - a.rarity || a.index - b.index;
     });
   }
   const needsBackgroundClock = (config, hidden) => !!(config.enabled && config.background && hidden);
@@ -167,8 +175,8 @@ self.onmessage = event => {
   if (event.data === 'start' && timer === null) timer = setInterval(() => self.postMessage('pulse'), 50);
   if (event.data === 'stop' && timer !== null) { clearInterval(timer); timer = null; }
 };`;
-  function chestDecision(cards, cfg, budget, deckAvailable, catalog = []) {
-    const ranked = rankChest(cards, cfg);
+  function chestDecision(cards, cfg, budget, deckAvailable, catalog = [], owned = null) {
+    const ranked = rankChest(cards, cfg, owned);
     const configured = Object.values(cfg.priorities).some(x => splitTiers(x).length);
     if (!ranked.length) return { type: 'wait', reason: '沒有可識別卡片' };
     const good = ranked.some(c => c.tier === 0);
@@ -190,10 +198,18 @@ self.onmessage = event => {
     return { type: 'pick', card: ranked[0] };
   }
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  function townDirection(target, player) {
+    const dx = target.x - player.x, dy = target.y - player.y;
+    return [Math.abs(dx) > 18 ? dx > 0 ? 'ArrowRight' : 'ArrowLeft' : '', Math.abs(dy) > 18 ? dy > 0 ? 'ArrowDown' : 'ArrowUp' : ''].filter(Boolean);
+  }
+  const noFlipDue = (game, config) => !!(config.noFlipEnabled && Number.isFinite(game?.time) && game.time >= config.noFlipMinutes * 60 && ['playing', 'levelup'].includes(game.state));
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'noFlipEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    if ([1, 2, 3].includes(Number(raw.expeditionLap))) out.expeditionLap = Number(raw.expeditionLap);
+    if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
+    if (Array.isArray(raw.sellQualities)) out.sellQualities = [...new Set(raw.sellQualities.filter(q => Number.isInteger(q) && q >= 0 && q <= 4))].sort();
     if (typeof raw.fourth === 'string') out.fourth = raw.fourth.slice(0, 100).trim();
     if (typeof raw.fifth === 'string') out.fifth = raw.fifth.slice(0, 100).trim();
     if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
@@ -259,7 +275,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove, townDirection, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -280,6 +296,7 @@ self.onmessage = event => {
     settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
     panelDrag: null, suppressMiniClickUntil: 0,
+    noFlipDone: false, postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false,
   };
   let root, panel, ui, interval, attachTimer;
   const $ = selector => document.querySelector(selector);
@@ -374,7 +391,7 @@ self.onmessage = event => {
   }
   function toggle() {
     cfg.enabled = !cfg.enabled; save();
-    if (!cfg.enabled) stopMove();
+    if (!cfg.enabled) { stopMove(); releaseTownKeys(); }
     syncBackground();
     log(cfg.enabled ? '已啟動' : '已暫停'); renderStatus();
   }
@@ -416,7 +433,7 @@ self.onmessage = event => {
   function readStages() {
     const cards = [...document.querySelectorAll('#stg-list .stg-card')];
     if (cards.length) state.stages = cards.map(card => {
-      const name = text(card, '.stg-card-info b'), index = Number(card.dataset.i);
+      const name = text(card, '.stg-card-info b').replace(/[・·]改(?:²)?\s*$/, ''), index = Number(card.dataset.i);
       const known = STAGES.find(([, n]) => norm(n) === norm(name)) || STAGES[index];
       return { id: known?.[0] || `name:${name}`, name, index, locked: card.classList.contains('locked') || card.classList.contains('soon') };
     });
@@ -439,6 +456,7 @@ self.onmessage = event => {
     stopMove(); state.game = g; state.route = null; state.velocities = new WeakMap(); state.used = state.skillUsed = 0;
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
+    state.noFlipDone = false; state.postRun = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
     // 記錄遊戲本來建立的紅色地面預警；不改寫傷害、技能、抽卡或角色能力。
@@ -517,6 +535,23 @@ self.onmessage = event => {
   function resetPicker() {
     state.pickerNode = null; state.pending = null; state.used = 0; state.skillUsed = 0;
   }
+  function ownedChestSlots() {
+    const slots = state.game?.runItems?.slots;
+    if (slots && typeof slots.entries === 'function') return Object.fromEntries([...slots.entries()].map(([slot, value]) => [slot, { item: value.item, level: value.vals?.length || 1 }]));
+    const hud = $('#runitems');
+    if (!hud || !hud.querySelector('.run-slot')) return null;
+    return Object.fromEntries([...hud.querySelectorAll('.run-slot[data-item]:not(.empty)')].map(el => [el.dataset.item, { level: (Number(text(el, '.lvl').replace('+', '')) || 0) + 1 }]));
+  }
+  function timedNoFlip() {
+    if (state.noFlipDone || !noFlipDue(state.game, cfg)) return;
+    if (state.game.roNoFlip) { state.noFlipDone = true; return; }
+    const check = $('#nf-check'), button = $('#nf-btn');
+    if (check && !check.disabled && check.checked) {
+      check.checked = false; check.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (visible(button) && !button.disabled && !button.classList.contains('on')) button.click();
+    else return;
+    state.noFlipDone = true; log(`本局已達 ${cfg.noFlipMinutes} 分鐘，已開啟「之後不再翻牌」；寶箱照常處理`);
+  }
   function actPicker(now) {
     const picker = $('#picker');
     if (!visible(picker)) { resetPicker(); return; }
@@ -561,7 +596,7 @@ self.onmessage = event => {
     if (cards.some(c => !c.slot)) { log('寶箱欄位未識別；等待手動選擇'); return; }
     const deck = deckButton(picker), left = state.game?.perksLeft;
     const cardLeft = Math.max(0, ...cards.map(c => Number(text(c.reroll, 'small') || 0)));
-    const result = chestDecision(cards, cfg, { used: state.used, card: left?.reroll_card ?? cardLeft, deck: left?.reroll ?? Number(text(deck, 'small') || 0) }, !!deck, state.catalog);
+    const result = chestDecision(cards, cfg, { used: state.used, card: left?.reroll_card ?? cardLeft, deck: left?.reroll ?? Number(text(deck, 'small') || 0) }, !!deck, state.catalog, ownedChestSlots());
     if (result.type === 'pick') return pick(result.card, now);
     if (result.type === 'wait') { log(result.reason); return; }
     const button = result.type === 'card' ? result.card.reroll : deck;
@@ -611,6 +646,108 @@ self.onmessage = event => {
     state.flow = { key, node: button, at: now };
     button.click(); return true;
   }
+  const NPC_NAMES = {
+    vendor: /礦石商人|矿石商人|Vendedor de minerales|Ore Merchant|Ore vendor|Mercador de Minérios/i,
+    captain: /隊長|队长|captain|capitán|capitão/i,
+  };
+  function releaseTownKeys() {
+    for (const key of state.townKeys) window.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+    state.townKeys = [];
+    if (state.townPulse !== null) { clearTimeout(state.townPulse); state.townPulse = null; }
+  }
+  function approachNpc(kind, now) {
+    const prompt = $('#lobby-prompt'), name = NPC_NAMES[kind];
+    if (visible(prompt) && name.test(prompt.textContent)) { releaseTownKeys(); return flowClick(prompt, `npc:${kind}`, now); }
+    if (document.querySelector('.overlay:not(.hidden)') || now < state.manualUntil) { releaseTownKeys(); return false; }
+    const target = [...document.querySelectorAll('#lobby-labels .lobby-name.npc')].find(el => name.test(el.textContent));
+    const self = $('#lobby-labels .lobby-name.self');
+    if (!target || !self) { log(`等待${kind === 'vendor' ? '礦石商人' : '遠征隊長'}位置；請走近該 NPC`); return false; }
+    const a = target.getBoundingClientRect(), b = self.getBoundingClientRect();
+    // NPC 名牌在頭頂，自己的名牌在腳下；按畫面方向短按遊戲原有移動鍵。
+    const keys = townDirection({ x: a.left + a.width / 2, y: a.bottom + 45 }, { x: b.left + b.width / 2, y: b.bottom });
+    if (!keys.length) { log('已接近 NPC，等待交談提示'); return false; }
+    if (state.townKeys.length) return true;
+    state.townKeys = keys;
+    state.townDispatch = true;
+    try { for (const key of keys) window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); }
+    finally { state.townDispatch = false; }
+    state.townPulse = setTimeout(releaseTownKeys, 180);
+    return true;
+  }
+  function postRunStep(now) {
+    const g = state.game;
+    if (!state.postRun && g && state.finishedGame !== g && (visible($('#gameover')) || g.state === 'over') && (cfg.autoEquip || cfg.autoSell && cfg.sellQualities.length)) {
+      state.finishedGame = g; state.postRun = { stage: 'return', at: now, next: now + cfg.repeatDelay };
+    }
+    const p = state.postRun;
+    if (!p || p.stage === 'done') return false;
+    if (now < state.manualUntil || (!document.hidden && editingSettings())) { releaseTownKeys(); return true; }
+    if (now < p.next) return true;
+    const dialog = $('#npc-dialog'), lobby = visible($('#lobby-ui')) && document.body.classList.contains('in-lobby');
+    if (p.stage === 'return') {
+      if (visible(dialog) && /未完待續|未完待续|continuar|to be continued/i.test(text(dialog, '#npc-name'))) { flowClick(dialog.querySelector('#npc-options button.primary'), 'post-summary', now); return true; }
+      if (visible($('#gameover'))) { flowClick($('#btn-restart'), 'post-return', now); return true; }
+      if (!lobby || visible($('#loading'))) return true;
+      p.stage = 'equip'; p.next = now + 700; return true;
+    }
+    if (!lobby) { releaseTownKeys(); return true; }
+    const finish = message => { releaseTownKeys(); p.stage = 'done'; state.flow = null; log(message); return true; };
+    if (!cfg.autoEquip && !cfg.autoSell && p.stage !== 'sell-wait') {
+      if (p.stage === 'sell-confirm' && visible(dialog) && p.confirm?.isConnected) dialog.querySelector('#npc-options button:not(.primary)')?.click();
+      if (visible($('#charpanel'))) $('#cp-back')?.click();
+      if (visible($('#shop'))) $('#shop-close')?.click();
+      return finish('結算整理已停用');
+    }
+    if (p.stage === 'equip') {
+      if (!cfg.autoEquip) { p.stage = 'sell'; return true; }
+      if (!visible($('#charpanel'))) { $('#lobby-char')?.click(); p.next = now + 700; return true; }
+      const tab = $('#charpanel [data-tab="equip"]');
+      if (tab && !tab.classList.contains('active')) { tab.click(); p.next = now + 400; return true; }
+      const button = $('#cp-auto-btn');
+      if (!button || button.disabled) { log('等待遊戲一鍵穿裝按鈕；可關閉自動穿裝後繼續'); return true; }
+      button.click(); p.stage = 'equip-close'; p.next = now + 700; log('已執行遊戲一鍵穿裝：同武器類型、可穿且分數更高的裝備'); return true;
+    }
+    if (p.stage === 'equip-close') {
+      if (visible($('#charpanel'))) { $('#cp-back')?.click(); p.next = now + 700; return true; }
+      p.stage = 'sell'; return true;
+    }
+    if (p.stage === 'sell') {
+      if (!cfg.autoSell || !cfg.sellQualities.length) return finish('結算穿裝完成；未啟用出售或未勾選品質');
+      if (!visible($('#shop'))) { approachNpc('vendor', now); return true; }
+      releaseTownKeys();
+      const all = $('#shop-filters [data-f="all"]');
+      if (all && !all.classList.contains('active')) { all.click(); p.next = now + 300; return true; }
+      const quick = $('#shop-quick');
+      if (!visible(quick)) { log('等待遊戲一鍵販賣介面；請切到商人「出售」分頁'); return true; }
+      // 每次只改一個原生勾選，因為遊戲會立即重繪整個販賣區。
+      const checks = [...quick.querySelectorAll('[data-qs], [data-qo]')];
+      const mismatch = checks.find(el => el.checked !== (el.hasAttribute('data-qs') && cfg.sellQualities.includes(Number(el.dataset.qs))));
+      if (mismatch) { mismatch.checked = !mismatch.checked; mismatch.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      const button = $('#shop-quick-btn');
+      if (!button) { log('目前遊戲版本未提供一鍵販賣；等待手動處理'); return true; }
+      if (button.disabled) { $('#shop-close')?.click(); return finish('沒有符合所選品質的可出售裝備；已保留穿著中、保護、初始、插卡和精煉裝備'); }
+      p.saleConfig = JSON.stringify(cfg.sellQualities); button.click();
+      p.confirm = visible(dialog) && /一鍵販賣/.test(text(dialog, '#npc-name')) ? dialog.querySelector('#npc-options button.primary') : null;
+      p.stage = 'sell-confirm'; p.next = now + 400; return true;
+    }
+    if (p.stage === 'sell-confirm') {
+      if (!cfg.autoSell || p.saleConfig !== JSON.stringify(cfg.sellQualities)) {
+        if (visible(dialog) && p.confirm?.isConnected) dialog.querySelector('#npc-options button:not(.primary)')?.click();
+        $('#shop-close')?.click(); return finish('出售設定已改變，已取消這次出售');
+      }
+      if (!visible(dialog) || !p.confirm?.isConnected || !/一鍵販賣/.test(text(dialog, '#npc-name')) || !/全部賣掉/.test(p.confirm.textContent)) {
+        log('出售確認與預期不符，等待手動處理'); return true;
+      }
+      p.stage = 'sell-wait'; p.at = now; p.next = now + 800; p.confirm.click(); log('已確認按勾選品質出售；等待遊戲保存結果'); return true;
+    }
+    if (p.stage === 'sell-wait') {
+      const info = text($('#shop'), '#shop-info');
+      if (/已售|售出|賣出|卖出|Has vendido|You sold|vendid|vendeu/i.test(info)) { $('#shop-close')?.click(); return finish(`結算整理完成：${info}`); }
+      if (now - p.at > 15000) log(`出售未確認成功，暫停下一次遠征；請查看商人提示：${info || '等待伺服器回覆'}`);
+      return true;
+    }
+    return true;
+  }
   function repeatStep(now) {
     if (!cfg.repeat) return false;
     if (cfg.repeatLimit > 0 && state.runsStarted >= cfg.repeatLimit) {
@@ -627,6 +764,11 @@ self.onmessage = event => {
     }
     const dialog = $('#npc-dialog');
     if (visible(dialog)) {
+      if (state.launchStage === cfg.expedition && /高難度提醒|高难度提醒|High difficulty|Dificultad alta|Dificuldade alta/i.test(text(dialog, '#npc-name'))) {
+        const button = dialog.querySelector('#npc-options button.primary');
+        if (button && /入場|入场|Enter|Entrar/i.test(button.textContent)) { state.launchPending = true; return flowClick(button, 'high-difficulty', now); }
+        return true;
+      }
       if (state.game?.state === 'over' && /未完待續|continuar|to be continued/i.test(text(dialog, '#npc-name'))) {
         return flowClick(dialog.querySelector('#npc-options button.primary'), 'continue-summary', now);
       }
@@ -638,6 +780,13 @@ self.onmessage = event => {
       return true;
     }
     if (visible($('#stages'))) {
+      const tabs = [...document.querySelectorAll('#lap-tabs [data-laptab]')];
+      const currentLap = Number(tabs.find(t => t.classList.contains('primary'))?.dataset.laptab || 1);
+      if (currentLap !== cfg.expeditionLap) {
+        const tab = tabs.find(t => Number(t.dataset.laptab) === cfg.expeditionLap);
+        if (!tab || tab.disabled) { log(`第 ${cfg.expeditionLap} 周目尚未解鎖，等待手動處理`); return true; }
+        return flowClick(tab, `lap:${cfg.expeditionLap}`, now);
+      }
       const cards = readStages();
       const stage = state.stages.find(s => s.id === cfg.expedition);
       const card = stage && cards.find(c => Number(c.dataset.i) === stage.index);
@@ -652,8 +801,8 @@ self.onmessage = event => {
     }
     if (visible($('#lobby-ui')) && document.body.classList.contains('in-lobby') && !visible($('#loading'))) {
       const prompt = $('#lobby-prompt');
-      if (visible(prompt) && /隊長|captain|capitán/i.test(prompt.textContent)) return flowClick(prompt, 'captain', now);
-      log('重複遠征等待隊長；請先走到遠征隊長附近'); return true;
+      if (visible(prompt) && NPC_NAMES.captain.test(prompt.textContent)) return flowClick(prompt, 'captain', now);
+      approachNpc('captain', now); return true;
     }
     return false;
   }
@@ -713,6 +862,8 @@ self.onmessage = event => {
       if (now < state.manualUntil) { stopMove(); return; }
       if (now - state.lastListRead > 1000) { state.lastListRead = now; if (visible($('#stages'))) readStages(); }
       if (collectReveal(now)) return;
+      timedNoFlip();
+      if (postRunStep(now)) return;
       if (repeatStep(now)) return;
       if (visible($('#picker'))) actPicker(now);
       else { resetPicker(); movement(now); }
@@ -737,11 +888,12 @@ self.onmessage = event => {
     ui.querySelector('#exclude-toggle').textContent = cfg.banishExcludeEnabled ? '停用排除放逐的技能' : '啟用排除放逐的技能';
     ui.querySelector('#exclude-toggle').classList.toggle('on', cfg.banishExcludeEnabled);
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
-    ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
+    ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
     ui.querySelector('#log').textContent = state.logs.slice(-10).map(e => `${e.time} ${e.message}`).join('\n');
   }
   function populate() {
+    for (const el of ui.querySelectorAll('[data-sell-quality]')) el.checked = cfg.sellQualities.includes(Number(el.dataset.sellQuality));
     for (const el of ui.querySelectorAll('[data-setting]')) {
       const value = cfg[el.dataset.setting];
       if (el.type === 'checkbox') el.checked = value;
@@ -822,6 +974,10 @@ self.onmessage = event => {
       <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
       <small>兩個開關獨立生效。技能僅在沒有合規選項時重抽整組，關閉後等待手動選擇；寶箱關閉後按現有牌優先級與下方處理方式選擇或等待。沿用下方重抽上限與保留次數。</small>
       </details>
+      <details><summary>定時關閉升級翻牌</summary>
+      <label><input data-setting="noFlipEnabled" type="checkbox"> 啟用定時「之後不再翻牌」</label>
+      <label>本局經過幾分鐘後開啟<input data-setting="noFlipMinutes" type="number" min="0" max="180" step="0.1"></label>
+      <small>使用遊戲局內時間，每局重新計時；只關閉之後的技能升級翻牌，寶箱照常。到時執行一次；0 表示開局後即啟用。</small></details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -830,11 +986,20 @@ self.onmessage = event => {
       </details>
       <details><summary>指定副本重複遠征</summary>
       <label><input data-setting="repeat" type="checkbox"> 啟用自動重複遠征</label>
+      <label>遠征周目<select data-setting="expeditionLap"><option value="1">一周目</option><option value="2">二周目・改</option><option value="3">三周目・改²</option></select></label>
       <label>要重複的副本<select data-setting="expedition"></select></label><button id="read-stages">讀取遊戲副本清單</button>
       <div class="row"><label>自動開局上限（0＝不限）<input data-setting="repeatLimit" type="number" min="0" max="9999"></label><label>局間等待毫秒<input data-setting="repeatDelay" type="number" min="1500" max="60000"></label></div>
       <p id="repeat-status" class="hint"></p><small>單人遠征結算後返回隊長，選定副本並沿用目前難度出發。首次請在隊長附近或開啟遠征清單；未解鎖、副本條件不符或組隊確認時等待手動操作。</small>
       </details>
+      <details><summary>結算後裝備整理</summary>
+      <label><input data-setting="autoEquip" type="checkbox"> 打完副本後自動一鍵穿更優裝備</label>
+      <small>使用遊戲一鍵穿裝：比較裝備分數，武器保持原類型；先穿裝，再出售。原裝備插卡不會自動移到新裝備。</small>
+      <label><input data-setting="autoSell" type="checkbox"> 打完副本後自動出售勾選品質的裝備</label>
+      <div class="checkrow">${['普通', '優良', '稀有', '史詩', '傳說'].map((name, q) => `<label><input data-sell-quality="${q}" type="checkbox"> ${name}</label>`).join('')}</div>
+      <small>總開關和品質均需勾選，預設全部關閉。不出售穿著中、受保護、初始、角色專屬、已插卡及已精煉裝備，不出售卡片。整理未完成前不開始下一場；取消重複遠征仍可單獨整理。</small></details>
       <details open><summary>五欄位寶箱優先級</summary>
+      <label><input data-setting="chestFillFirst" type="checkbox"> 優先補齊五欄；同優先級先升級較低等級欄位</label>
+      <small>三張都未命中第一優先級時仍先按策略重抽。選牌時先補空欄，再比較配置優先級；同級先補低等級、再比較稀有度。關閉可恢復原排序。</small>
       <p class="hint">每行一級，第一行為第一優先級；同級用 | 分隔。選入後顯示「中文名稱 [ID]」，舊版純 ID 自動補中文。空白＝無指定。可保留名稱與 ID 一起排序，或只填名稱／ID。包含匹配須寫 *傷害*。</p>
       ${Object.entries(SLOT_NAMES).map(([id, name]) => `<h4>${name}</h4><select data-catalog="${id}"><option>等待物品表…</option></select><textarea data-priority="${id}" placeholder="第一優先級\n第二優先級 | 同級另一項"></textarea>`).join('')}
       <label>三張都不在第一優先級時<select data-setting="rerollMode"><option value="card-deck">先重抽單張，再重抽整組</option><option value="deck-card">先重抽整組，再重抽單張</option><option value="card">僅重抽單張</option><option value="deck">僅重抽整組</option><option value="off">不重抽</option></select></label>
@@ -870,9 +1035,13 @@ self.onmessage = event => {
       const el = e.target;
       if (el.dataset.setting) {
         const key = el.dataset.setting, wasRepeat = cfg.repeat;
-        cfg = validateConfig({ ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value }); stopMove();
+        cfg = validateConfig({ ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value }); stopMove(); releaseTownKeys();
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
-        if (key === 'repeat' || key === 'expedition') { state.flow = null; state.launchStage = ''; state.gameoverAt = null; }
+        if (['repeat', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.gameoverAt = null; }
+      }
+      if (el.hasAttribute('data-sell-quality')) {
+        const q = Number(el.dataset.sellQuality);
+        cfg.sellQualities = el.checked ? [...new Set([...cfg.sellQualities, q])].sort() : cfg.sellQualities.filter(value => value !== q);
       }
       if (el.dataset.exclude) {
         cfg.banishExclude = el.checked ? [...new Set([...cfg.banishExclude, el.dataset.exclude])] : cfg.banishExclude.filter(id => id !== el.dataset.exclude);
@@ -895,30 +1064,31 @@ self.onmessage = event => {
     ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
-      const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+      const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);
     attach(); attachTimer = setInterval(attach, 5000);
   }
   window.addEventListener('keydown', e => {
+    if (state.townDispatch && !e.isTrusted) return;
     const editing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName) || e.target?.isContentEditable || !!ui?.activeElement;
     if (e.key === 'F8') { e.preventDefault(); e.stopImmediatePropagation(); toggle(); return; }
     if (e.key === 'F9' && panel) { e.preventDefault(); e.stopImmediatePropagation(); togglePanel(); return; }
     if (e.key === 'Escape') state.resumeAfterVisibility = false;
-    if (editing) { stopMove(); return; }
-    if (e.isTrusted && /^(w|a|s|d|arrowup|arrowdown|arrowleft|arrowright)$/i.test(e.key)) { state.manualUntil = performance.now() + 3000; stopMove(); }
+    if (editing) { stopMove(); releaseTownKeys(); return; }
+    if (e.isTrusted && /^(w|a|s|d|arrowup|arrowdown|arrowleft|arrowright)$/i.test(e.key)) { state.manualUntil = performance.now() + 3000; stopMove(); releaseTownKeys(); }
   }, true);
   window.addEventListener('pointerdown', e => {
-    if (!e.composedPath().includes(root) && e.target instanceof HTMLCanvasElement && e.isTrusted) { state.manualUntil = performance.now() + 3000; stopMove(); }
+    if (!e.composedPath().includes(root) && e.target instanceof HTMLCanvasElement && e.isTrusted) { state.manualUntil = performance.now() + 3000; stopMove(); releaseTownKeys(); }
   }, true);
-  window.addEventListener('blur', () => { if (!cfg.enabled || !cfg.background) stopMove(); });
+  window.addEventListener('blur', () => { releaseTownKeys(); if (!cfg.enabled || !cfg.background) stopMove(); });
   window.addEventListener('ro-pause', () => { state.resumeAfterVisibility = false; }, true);
   document.addEventListener('visibilitychange', () => {
     state.resumeAfterVisibility = needsBackgroundClock(cfg, document.hidden) && state.game?.state === 'playing';
@@ -927,6 +1097,7 @@ self.onmessage = event => {
     if (document.hidden && !cfg.background) stopMove();
   }, true);
   window.addEventListener('pagehide', () => {
+    releaseTownKeys();
     stopBackgroundClock();
     if (state.settings && state.autoPauseOriginal !== null) state.settings.autoPause = state.autoPauseOriginal;
   });

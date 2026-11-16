@@ -439,18 +439,20 @@ test('native pool adapter holds a first-tier card and single-rerolls the other t
   } finally {f.close();}
 });
 
-test('deck-to-single transitions preserve per-box count, while consecutive boxes reset without hiding the picker',async()=>{
+test('filling any second slot switches the next box to single-first, with independent per-box counts',async()=>{
   const f=await browserFixture({priorities:{potion:'p_cd',elixir:'e_dmg'},maxRerolls:2});
   try {
     const scene=chestScenario(f,{blessing:{item:'b_dmg',vals:Array(13).fill(1)}});
     function box(index){
       f.game.openingChest={id:index};
       const miss=index===1?'p_hp':'e_hp',hit=index===1?'p_cd':'e_dmg';
-      scene.draw(['b_dmg'],{deck(){scene.draw([miss],{card(){scene.draw([hit],{pick(){if(index===1)box(2);else scene.closePicker()}})}})}});
+      const selected=()=>{if(index===1)box(2);else scene.closePicker()};
+      scene.draw(['b_dmg'],{deck(){if(index===1)scene.draw([hit],{pick:selected});else scene.draw([miss],{card(){scene.draw([hit],{pick:selected})}})}});
     }
     box(1);for(let i=0;i<16;i++)f.advance(1200);
-    assert.equal(scene.counts.deck,2);assert.equal(scene.counts.card,2);
-    assert.deepEqual(scene.counts.picks,['p_cd','e_dmg']);assert.deepEqual(scene.counts.used,[1,2,1,2]);
+    assert.equal(scene.counts.deck,2);assert.equal(scene.counts.card,1);
+    assert.deepEqual(scene.counts.picks,['p_cd','e_dmg']);assert.deepEqual(scene.counts.used,[1,1,2]);
+    assert.match(f.ui.querySelector('#chest-stage').textContent,/已填 3\/5.*後三欄/);
   } finally {f.close();}
 });
 
@@ -458,9 +460,9 @@ for(const exhausted of ['best','wait'])test(`same chest redraw never resets the 
   const f=await browserFixture({priorities:{potion:'p_cd'},maxRerolls:2,exhausted});
   try {
     const scene=chestScenario(f);f.game.openingChest={id:'same'};
-    function miss(){scene.draw(['p_hp'],{card:miss,pick:scene.closePicker})}
+    function miss(){scene.draw(['p_hp'],{card:miss,deck:miss,pick:scene.closePicker})}
     miss();for(let i=0;i<12;i++)f.advance(1200);
-    assert.equal(scene.counts.card,2);assert.equal(scene.counts.deck,0);assert.deepEqual(scene.counts.used,[1,2]);
+    assert.equal(scene.counts.card,0);assert.equal(scene.counts.deck,2);assert.deepEqual(scene.counts.used,[1,2]);
     assert.deepEqual(scene.counts.picks,exhausted==='best'?['p_hp']:[]);
   } finally {f.close();}
 });

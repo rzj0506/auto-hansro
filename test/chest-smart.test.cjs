@@ -29,8 +29,9 @@ test('first-tier priority always beats an empty second-tier slot, including when
   assert.equal(decision(offered,owned,{}, {used:6}).card.id,'firebolt');
 });
 
-test('visible target type uses single reroll even when the non-smart preference is deck first',()=>{
-  const result=decision([card('p_hp')],{},{rerollMode:'deck-card'});
+test('after any two slots are filled, visible target type uses single even when the non-smart preference is deck first',()=>{
+  const owned={blessing:{item:'b_cd',level:1},deity:{item:'firebolt',level:1}};
+  const result=decision([card('p_hp')],owned,{rerollMode:'deck-card'});
   assert.equal(result.type,'card');assert.equal(result.targetSlot,'potion');assert.match(result.reason,/單張定向/);
 });
 
@@ -149,8 +150,9 @@ test('same-tier selection prefers completing a deity, then preserves accumulated
 
 test('first-tier matching supports localized names and ID-bearing display tokens in the reachable pool',()=>{
   const localized=catalog.map(item=>({...item,name:item.id==='p_cd'?'冷卻藥水':item.name}));
+  const owned={blessing:{item:'b_dmg',level:1},dish:{item:'d_str',level:1}};
   for(const value of ['冷卻藥水','冷卻藥水 [p_cd]','p_cd']) {
-    const result=C.chestDecision([card('p_hp')],config({priorities:{potion:value}}),budget,true,localized,{},reachable({}));
+    const result=C.chestDecision([card('p_hp')],config({priorities:{potion:value}}),budget,true,localized,owned,reachable(owned));
     assert.equal(result.type,'card');
   }
 });
@@ -161,4 +163,45 @@ test('legacy configs default to smart strategy without changing priorities, rest
   assert.equal(old.reserveCard,2);assert.equal(old.reserveDeck,1);assert.equal(old.exhausted,'wait');assert.deepEqual(old.priorities,first);
   const restored=C.validateConfig(JSON.parse(JSON.stringify({...old,chestSmartReroll:false})));
   assert.equal(restored.chestSmartReroll,false);assert.deepEqual(restored.priorities,first);
+});
+
+test('zero or one filled slot prioritizes deck even when a missing target type already appears',()=>{
+  for(const owned of [{},{deity:{item:'firebolt',level:13}},{blessing:{item:'b_cd',level:4}}]) {
+    const result=decision([card('p_hp')],owned);
+    assert.equal(result.type,'deck');assert.equal(result.targetSlot,'potion');assert.match(result.reason,/前兩欄階段/);
+  }
+  const potion={potion:{item:'p_cd',level:3}};
+  assert.equal(decision([card('e_hp')],potion).type,'deck');
+});
+
+test('early stage falls back to single if deck is disabled, reserved, empty or unavailable',()=>{
+  for(const [extra,more,available] of [[{rerollMode:'card'},{},true],[{reserveDeck:9},{},true],[{}, {deck:0},true],[{}, {},false]]) {
+    const result=decision([card('p_hp')],{},extra,more,available);
+    assert.equal(result.type,'card');assert.equal(result.card.id,'p_hp');
+  }
+});
+
+test('later stage spends leftover deck rerolls to find a missing type, with reserves still honored',()=>{
+  const owned={blessing:{item:'b_dmg',level:4},dish:{item:'d_str',level:11}};
+  const offered=[card('b_dmg'),card('d_str',{index:1})];
+  const result=decision(offered,owned,{}, {deck:1});
+  assert.equal(result.type,'deck');assert.match(result.reason,/後三欄.*剩餘整組/);
+  assert.equal(decision(offered,owned,{reserveDeck:1},{deck:1}).type,'pick');
+  assert.equal(decision([card('p_hp')],owned,{}, {deck:1}).type,'card');
+});
+
+test('the stage counts any occupied valid slots, including non-first-tier items, and ignores absent or unrelated data',()=>{
+  assert.equal(C.chestFilledSlots(),null);assert.equal(C.chestFilledSlots(null),null);assert.equal(C.chestFilledSlots({}),0);
+  assert.equal(C.chestFilledSlots({potion:null,unknown:{item:'x'},blessing:{item:'b_dmg'},deity:{item:'g_avarice'}}),2);
+  const owned={blessing:{item:'b_dmg',level:1},deity:{item:'g_avarice',level:1}};
+  assert.equal(decision([card('p_hp')],owned).type,'card');
+});
+
+test('an early first-tier hit remains protected; stage preference does not override disabled fill or smart settings',()=>{
+  assert.equal(decision([card('p_cd')]).type,'pick');
+  const owned={deity:{item:'firebolt',level:13}};
+  const result=decision([card('firebolt'),card('p_hp',{index:1})],owned);
+  assert.equal(result.type,'card');assert.equal(result.card.id,'p_hp');assert.match(result.reason,/保留現有/);
+  assert.equal(decision([card('p_hp')],{},{chestFillFirst:false}).type,'card');
+  assert.equal(decision([card('p_hp')],{},{chestSmartReroll:false,rerollMode:'card-deck'}).type,'card');
 });

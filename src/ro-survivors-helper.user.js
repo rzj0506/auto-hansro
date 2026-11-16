@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.5.0
-// @description  寶箱並列優先級、時間／技能總等級停翻牌、三系目標數優先、智能重抽與結算裝備整理。
+// @version      1.5.1
+// @description  寶箱前兩欄整組／後三欄單張優先、並列優先級、時間／等級停翻牌與結算裝備整理。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.1';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -182,6 +182,9 @@
     if (!current) return 0;
     return tierOf(chestItem(current.item, slot, catalog, current), cfg) === 0 ? 2 : 1;
   }
+  function chestFilledSlots(owned = null) {
+    return owned === null ? null : Object.keys(SLOT_NAMES).filter(slot => !!owned[slot]).length;
+  }
   function rankChest(cards, cfg, owned = null, catalog = []) {
     const level = card => cfg.chestFillFirst && owned !== null ? Number(owned[card.slot]?.level) || 0 : 0;
     const loss = card => owned?.[card.slot]?.item && card.id && owned[card.slot].item !== card.id ? Number(owned[card.slot].level) || 1 : 0;
@@ -226,6 +229,7 @@ self.onmessage = event => {
     if (!ranked.length) return { type: 'wait', reason: '沒有可識別卡片' };
     const good = ranked.find(card => card.tier === 0);
     const targets = chestTargets(cfg, catalog, owned, context);
+    const filled = chestFilledSlots(owned);
     const allowed = cfg.chestReroll !== false && configured && budget.used < cfg.maxRerolls;
     const canCard = allowed && ['card-deck', 'deck-card', 'card'].includes(cfg.rerollMode) && budget.card > cfg.reserveCard;
     const canDeck = allowed && !good && ['card-deck', 'deck-card', 'deck'].includes(cfg.rerollMode) && deckAvailable && budget.deck > cfg.reserveDeck && targets.length;
@@ -235,12 +239,15 @@ self.onmessage = event => {
     }).sort((a, b) => a.target.need - b.target.need || b.card.tier - a.card.tier || a.card.rarity - b.card.rarity || a.card.index - b.card.index) : [];
     const single = (choice, protecting = false) => ({ type: 'card', card: choice.card, targetSlot: choice.target.slot,
       reason: `${protecting ? '保留現有第一優先級；' : ''}${SLOT_NAMES[choice.target.slot]}已在牌面，單張定向追首選` });
-    const deck = target => ({ type: 'deck', targetSlot: target.slot, reason: `${SLOT_NAMES[target.slot]}首選仍可取得，整組重新尋找可用目標類型` });
+    const deck = (target, early = false) => ({ type: 'deck', targetSlot: target.slot, reason:
+      `${early ? `前兩欄階段（已填 ${filled}/5），優先整組；` : cfg.chestSmartReroll !== false && cfg.chestFillFirst && filled >= 2 && filled < 5 ? '後三欄單張目標未出現或不可用，使用剩餘整組補齊；' : ''}${SLOT_NAMES[target.slot]}首選仍可取得，整組重新尋找可用目標類型` });
     if (cfg.chestSmartReroll !== false) {
       if (good) {
         const better = cfg.chestFillFirst && owned !== null && choices.find(choice => choice.target.confirmed && choice.target.need < chestNeed(good.slot, cfg, owned, catalog));
         if (better) return single(better, true);
       } else {
+        const earlyTarget = cfg.chestFillFirst && filled !== null && filled < 2 && targets.find(target => !owned[target.slot]);
+        if (earlyTarget && canDeck) return deck(earlyTarget, true);
         const needed = [...targets].sort((a, b) => a.need - b.need)[0];
         const direct = needed && choices.find(choice => choice.target.need === needed.need);
         if (direct) return single(direct);
@@ -358,7 +365,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -1022,6 +1029,10 @@ self.onmessage = event => {
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
     ui.querySelector('#skill-total').textContent = `本局技能總等級（含普攻）：${readTotalSkillLevel() ?? '等待讀取'}`;
+    const filled = chestFilledSlots(ownedChestSlots());
+    ui.querySelector('#chest-stage').textContent = cfg.chestSmartReroll === false ? '寶箱策略：依設定的先後順序' :
+      !cfg.chestFillFirst ? '寶箱策略：依可達類型追首選' : filled === null ? '寶箱策略：等待讀取已填欄位數' :
+      `寶箱策略：已填 ${filled}/5，${filled < 2 ? '前兩欄優先整組' : filled < 5 ? '後三欄優先單張，剩餘整組補齊' : '五欄已齊，按首選與等級升級'}`;
     ui.querySelector('#log').textContent = state.logs.slice(-10).map(e => `${e.time} ${e.message}`).join('\n');
   }
   function populate() {
@@ -1136,9 +1147,9 @@ self.onmessage = event => {
       <div class="checkrow">${['普通', '優良', '稀有', '史詩', '傳說'].map((name, q) => `<label><input data-sell-quality="${q}" type="checkbox"> ${name}</label>`).join('')}</div>
       <small>總開關和品質均需勾選，預設全部關閉。不出售穿著中、受保護、初始、角色專屬、已插卡及已精煉裝備，不出售卡片。整理未完成前不開始下一場；取消重複遠征仍可單獨整理。</small></details>
       <details open><summary>五欄位寶箱優先級</summary>
-      <label><input data-setting="chestSmartReroll" type="checkbox"> 智能追首選：按目標類型選擇單張／整組重抽</label>
+      <label><input data-setting="chestSmartReroll" type="checkbox"> 智能追首選：前兩欄整組、後三欄單張優先</label>
       <label><input data-setting="chestFillFirst" type="checkbox"> 同優先級先補空欄、讓神格成型，再均衡等級</label>
-      <small>先比配置優先級，空欄次優不會壓過首選。目標類型在牌面時單抽，不在時才考慮整組；已有首選時保住它，只單抽其他牌尋找更需要的首選，不整組冒險。普通物品填欄後通常鎖定品種，不對抽不到的目標浪費次數。</small>
+      <small id="chest-stage"></small><br><small>依已填欄位數分階段：先用整組快速選定任意兩欄，之後優先單張追其餘三欄首選；缺少目標類型或單張不可用時，剩餘整組仍可補齊。已有首選就保住它，不整組冒險；整組不可用時可改單張。先比配置優先級，普通物品鎖定品種後不對不可達目標浪費次數。</small>
       <p class="hint">每行一級，同一行可並列多項（用 | 分隔）。先選要加入的級別，再從物品表選入；同級自動並列，選「新增優先級」另起一級。任一並列首選命中都視為第一優先級。空白＝無指定；可填名稱／ID，包含匹配須寫 *傷害*。</p>
       ${Object.entries(SLOT_NAMES).map(([id, name]) => `<h4>${name}</h4><label>加入哪個優先級<select data-priority-tier="${id}" aria-label="${name}加入優先級"><option value="new">新增優先級</option></select></label><select data-catalog="${id}"><option>等待物品表…</option></select><textarea data-priority="${id}" placeholder="第一優先級 A | 第一優先級 B\n第二優先級 C | 第二優先級 D"></textarea>`).join('')}
       <label>允許的重抽方式／非智能模式先後順序<select data-setting="rerollMode"><option value="card-deck">單張＋整組（非智能時先單張）</option><option value="deck-card">整組＋單張（非智能時先整組）</option><option value="card">僅重抽單張</option><option value="deck">僅重抽整組</option><option value="off">不重抽</option></select></label>

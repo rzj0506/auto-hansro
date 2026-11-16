@@ -99,7 +99,7 @@ async function browserFixture(saved = {}) {
     if (element.type === 'checkbox') element.checked = value; else element.value = value;
     element.dispatchEvent(new w.Event('change', { bubbles: true }));
   }
-  function advance(ms) { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); } for (const timer of intervals.values()) if (timer.ms === 100 || timer.ms === 500) timer.fn(); }
+  function advance(ms, runIntervals = true) { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); } if (runIntervals) for (const timer of intervals.values()) if (timer.ms === 100 || timer.ms === 500) timer.fn(); }
   function picker(kind, { eligible = false, cardDisabled = false, deckDisabled = false } = {}) {
     const counts = { card: 0, deck: 0, pick: 0 };
     const element = w.document.querySelector('#picker');
@@ -513,4 +513,178 @@ test('actual skill picker selects ordinary fixed target upgrade over legendary d
     [...picker.querySelectorAll('.pk-card')].forEach((button,i)=>button.onclick=()=>{picked=i;picker.classList.add('hidden')});
     f.advance(100);f.advance(1100);assert.equal(picked,1);
   }finally{f.close();}
+});
+
+// Run the unmodified HANS boss cast against the actual userscript. Rendering,
+// audio and enemy spawning are stubs; countdown, seal and damage checks are native.
+function moonBellScenario(f, { sealed = false } = {}) {
+  const fixture = require('./fixtures/native-bell.json');
+  const { w, game: g } = f;
+  w.eval(`window.fixtureMoonBell = (() => {
+    const zc=${fixture.constants.safeRadius},eC=${fixture.constants.damage},Re=Math.cos,Le=Math.sin,we=Math.hypot;
+    const O={play(){}},Je=()=>({}),c=s=>s,tC=id=>id;
+    const sk=class { constructor(o){this.style=o.style;this.anchor={set(){}}} };
+    const Qe=class { addChild(){} };
+    const $E=class {
+      constructor(o){this.mesh={position:{x:0,z:0}};this.bellMat={};this.groundMat={uniforms:{safeR:{value:o.safeR}}};this.sealed=false;this.charge=0;this.waveAge=-1;this.out=-1}
+      toll(){this.waveAge=0} finish(){this.out=0}
+    };
+    ${fixture.cast}
+    return am;
+  })()`);
+  w.document.body.insertAdjacentHTML('beforeend', '<div id="hud"></div>');
+  const boss = { x: 500, y: 500, dead: false, def: { id: 'moonlight', radius: 41 }, sprite: { alpha: 1 } };
+  Object.assign(g, { state: 'playing', time: 1, classDef: { speed: 145 }, stats: { speedMult: 1 }, buffValue: () => 0,
+    zeny: 1000, chestCost: () => 10, enemies: [boss], world3d: { cylinders: [] }, fx: [], scheduled: [], damage: 0,
+    pickups: [{ kind: 'chest', x: 300, y: 480, dead: false }], moves: [],
+    moveTo(x, y) { this.movePath = [{ x, y }]; this.moves.push({ x, y }); },
+    fx3d(x, y, effect) { effect.mesh.position.x = x; effect.mesh.position.z = y; this.world3d.cylinders.push(effect); },
+    addFx(effect) { if (effect.update) this.fx.push(effect); },
+    schedule(seconds, fn) { this.scheduled.push({ at: this.time + seconds, fn }); },
+    spawnBoss(id, x, y) { const mini = { x, y, def: { id, hp: 112500, radius: 26 }, maxHp: 112500, hp: 112500, dead: false }; this.enemies.push(mini); return mini; },
+    events: { onAnnounce() {} }, shake() {}, hurtPlayer(n) { this.damage += n; },
+  });
+  w.fixtureMoonBell(sealed ? fixture.constants.sealedSeconds : fixture.constants.normalSeconds,
+    sealed ? { id: 'cat_o_nine_tail', secs: fixture.constants.miniSeconds, hp: 175000 } : undefined)(g, boss, { aim: () => ({ x: 500, y: 500 }), rnd: () => 0 });
+  const bell = g.world3d.cylinders[0];
+  function progress(dt) {
+    const goal = g.movePath?.[0];
+    if (goal && g.state === 'playing') {
+      const d = Math.hypot(goal.x - g.player.x, goal.y - g.player.y), travel = Math.min(d, g.classDef.speed * 1.3 * dt);
+      if (d) { g.player.x += (goal.x - g.player.x) / d * travel; g.player.y += (goal.y - g.player.y) / d * travel; }
+      if (d <= travel) g.movePath.shift();
+    }
+    if (g.state !== 'playing') return;
+    g.time += dt;
+    for (const task of [...g.scheduled]) if (task.at <= g.time) { g.scheduled.splice(g.scheduled.indexOf(task), 1); task.fn(); }
+    g.fx = g.fx.filter(effect => !effect.update(dt * 1000));
+  }
+  function step(seconds) { for (let i = 0; i < Math.round(seconds * 10); i++) { progress(.1); f.advance(100); } }
+  const distance = () => Math.hypot(g.player.x - bell.mesh.position.x, g.player.y - bell.mesh.position.z);
+  return { g, boss, bell, step, progress, distance };
+}
+
+test('native nine-second bell: reach shelter before toll, hold through strike, then resume loot', async () => {
+  const f = await browserFixture({ dodge: true, pickups: true });
+  try {
+    const s = moonBellScenario(f);
+    s.step(3); assert(s.distance() <= 128); assert.equal(s.bell.waveAge, -1);
+    for (let i = 0; i < 61; i++) { s.step(.1); assert(s.distance() <= 128); }
+    assert.equal(s.bell.waveAge, 0); assert.equal(s.g.damage, 0);
+    f.ui.querySelector('#diagnose').click();
+    const report = JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(report.bell.active, true); assert.equal(report.bell.struck, true); assert.equal(report.bell.radius, 128);
+    s.step(1.2); assert.equal(s.bell.out, 0);
+    assert.match(f.ui.querySelector('#log').textContent, /鐘罩機制結束/);
+    assert(s.g.movePath?.[0].x < s.g.player.x, 'loot to the left becomes the goal again');
+  } finally { f.close(); }
+});
+
+test('native control: remaining outside the bell takes the original lethal damage', async () => {
+  const f = await browserFixture({ dodge: false, chests: false, pickups: false });
+  try { const s = moonBellScenario(f); s.step(9.1); assert.equal(s.g.damage, 999); assert.equal(s.g.moves.length, 0); }
+  finally { f.close(); }
+});
+
+for (const unlock of [false, true]) test(`native sealed bell: entering alone remains unsafe; mini killed in time=${unlock}`, async () => {
+  const f = await browserFixture({ dodge: true, chests: false, pickups: false });
+  try {
+    const s = moonBellScenario(f, { sealed: true });
+    s.step(3); assert(s.distance() <= 128); assert.equal(s.bell.sealed, true);
+    assert.match(f.ui.querySelector('#bell-status').textContent, /進罩也不安全.*九尾狐/);
+    assert.equal(s.g.enemies.find(e => e.def.id === 'cat_o_nine_tail').hp, 175000);
+    if (unlock) { s.g.enemies.find(e => e.def.id === 'cat_o_nine_tail').dead = true; s.step(.1); assert.equal(s.bell.sealed, false); }
+    s.step(20.1); assert.equal(s.g.damage, unlock ? 0 : 999);
+    assert(s.distance() <= 128);
+  } finally { f.close(); }
+});
+
+test('native sealed bell cannot be unlocked after the mini deadline', async () => {
+  const f = await browserFixture({ dodge: true, chests: false, pickups: false });
+  try {
+    const s = moonBellScenario(f, { sealed: true }); s.step(21);
+    s.g.enemies.find(e => e.def.id === 'cat_o_nine_tail').dead = true;
+    s.step(2.1); assert.equal(s.bell.sealed, true); assert.equal(s.g.damage, 999);
+  } finally { f.close(); }
+});
+
+test('bell follows a wall detour using native path waypoints instead of moving through a wall', async () => {
+  const f = await browserFixture({ dodge: true });
+  try {
+    const s = moonBellScenario(f);
+    const open = (x, y) => !(x >= 650 && x <= 730 && y < 650);
+    s.g.walk = { nearestWalkable: (x, y) => [x, y], walkable: open,
+      pathTo: (px, py, x, y) => px < 800 ? [...(py < 710 ? [{ x: 600, y: 740 }] : []), { x: 800, y: 740 }, { x, y }] : [{ x, y }],
+      resolve(ax, ay, bx, by) { for (let i = 0; i <= 8; i++) if (!open(ax + (bx - ax) * i / 8, ay + (by - ay) * i / 8)) return [ax, ay]; return [bx, by]; } };
+    for (let i = 0; i < 80; i++) { s.step(.1); assert(open(s.g.player.x, s.g.player.y)); }
+    assert(s.distance() <= 128); s.step(1.1); assert.equal(s.g.damage, 0);
+  } finally { f.close(); }
+});
+
+test('unreachable bell stops owned movement and reports manual intervention', async () => {
+  const f = await browserFixture({ dodge: true });
+  try {
+    const s = moonBellScenario(f); s.step(.2); assert(s.g.movePath?.length);
+    s.g.walk = { nearestWalkable: () => [0, 0], pathTo: () => { throw Error('must not route outside bell'); } };
+    s.step(.3); assert.equal(s.g.movePath, null); assert.match(f.ui.querySelector('#bell-status').textContent, /路徑不可達/);
+  } finally { f.close(); }
+});
+
+test('bell movement takes priority over an open loot reveal and resumes its native collect button afterward', async () => {
+  const f = await browserFixture({ dodge: true, pickups: true });
+  try {
+    const s = moonBellScenario(f); let collected = 0;
+    f.w.document.body.insertAdjacentHTML('beforeend', '<div id="drop-reveal"><div class="dr-inner"><button class="dr-get">領取</button></div></div>');
+    f.w.document.querySelector('.dr-get').onclick = () => { collected++; f.w.document.querySelector('#drop-reveal').classList.add('hidden'); };
+    s.step(9.1); assert.equal(collected, 0); assert(s.distance() <= 128); assert.equal(s.g.damage, 0);
+    s.step(2); assert.equal(collected, 1);
+  } finally { f.close(); }
+});
+
+test('bell respects pause, toggle, replay, hidden-tab policy and new-run cleanup', async () => {
+  const f = await browserFixture({ dodge: true });
+  try {
+    const s = moonBellScenario(f); s.g.state = 'paused'; s.step(.2); assert.equal(s.g.moves.length, 0);
+    s.g.state = 'playing'; s.g.replayMoves = []; s.step(.2); assert.equal(s.g.moves.length, 0);
+    s.g.replayMoves = null; f.setting('bellShelter', false); f.setting('chests', false); f.setting('pickups', false);
+    s.step(.2); assert.match(f.ui.querySelector('#bell-status').textContent, /未啟用/);
+    f.setting('bellShelter', true);
+    Object.defineProperty(f.w.document, 'hidden', { configurable: true, value: true });
+    s.g.moves = []; s.step(.2); assert.equal(s.g.moves.length, 0);
+    Object.defineProperty(f.w.document, 'hidden', { configurable: true, value: false });
+    s.step(.2); assert(s.g.moves.length > 0);
+    f.ui.querySelector('#toggle').click(); assert.equal(s.g.movePath, null);
+    s.g.moves = []; s.step(.2); assert.equal(s.g.moves.length, 0);
+    f.ui.querySelector('#toggle').click();
+    const next = { ...s.g, time: 0, world3d: { cylinders: [] }, pickups: [], moves: [], state: 'playing' };
+    f.hooks.start[0](next); f.advance(500); assert.match(f.ui.querySelector('#bell-status').textContent, /尚無/);
+    f.ui.querySelector('#diagnose').click(); assert.equal(JSON.parse(f.ui.querySelector('#config').value).bell.active, false);
+  } finally { f.close(); }
+});
+
+test('bell leaves paused skill picker available, then resumes shelter after selection', async () => {
+  const f = await browserFixture({ dodge: true });
+  try {
+    const s = moonBellScenario(f); const counts = f.picker('skill', { eligible: true });
+    for (let i = 0; i < 3; i++) f.advance(1200);
+    assert.equal(counts.pick, 1); assert.equal(s.g.moves.length, 0);
+    s.g.state = 'playing'; s.step(3); assert(s.distance() <= 128);
+  } finally { f.close(); }
+});
+
+test('hidden Worker pulses drive native bell countdown and shelter movement with browser intervals suspended', async () => {
+  const f = await browserFixture({ dodge: true, background: true });
+  try {
+    const s = moonBellScenario(f); let worker, updates = 0;
+    f.w.URL.createObjectURL = () => 'blob:fixture'; f.w.URL.revokeObjectURL = () => {};
+    f.w.Worker = class { constructor() { worker = this; this.messages = []; } postMessage(m) { this.messages.push(m); } };
+    s.g.app = { ticker: { started: true, stop() { this.started = false; }, start() { this.started = true; }, update() { updates++; s.progress(.1); } } };
+    Object.defineProperty(f.w.document, 'hidden', { configurable: true, value: true });
+    f.w.document.dispatchEvent(new f.w.Event('visibilitychange'));
+    assert.equal(s.g.app.ticker.started, false); assert(worker.messages.includes('start'));
+    for (let i = 0; i < 91; i++) { f.advance(100, false); worker.onmessage({ data: 'pulse' }); }
+    assert.equal(updates, 91); assert(s.distance() <= 128); assert.equal(s.g.damage, 0); assert.equal(s.bell.waveAge, 0);
+    f.ui.querySelector('#toggle').click(); assert.equal(s.g.movePath, null);
+    assert(worker.messages.includes('stop')); assert.equal(s.g.app.ticker.started, true);
+  } finally { f.close(); }
 });

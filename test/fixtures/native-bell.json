@@ -1,0 +1,13 @@
+{
+  "source": "https://ro.hans-webgametw.com/build/main-BNOcv2PN.hzcd62bfc7.js",
+  "retrieved": "2026-11-16",
+  "bundleSha256": "9cf9a1dc4ec456dcfc5803ebcba34a0c29d22d276dac72013336e85c4b3de8f7",
+  "constants": {
+    "safeRadius": 150,
+    "damage": 999,
+    "normalSeconds": 9,
+    "sealedSeconds": 23,
+    "miniSeconds": 20
+  },
+  "cast": "function am(a,e){return(t,s,n)=>{var v;const o=n.aim();let i=o.x,r=o.y;for(let x=0;x<60;x++){const k=n.rnd()*Math.PI*2,M=380+n.rnd()*240,$=o.x+Re(k)*M,P=o.y+Le(k)*M,q=Array.from({length:8},(R,A)=>A/8*Math.PI*2).every(R=>!t.walk||t.walk.walkable($+Re(R)*zc*.7,P+Le(R)*zc*.7));if(!t.walk||t.walk.walkable($,P)&&t.walk.reachable($,P)&&q){i=$,r=P;break}}const l=new $E({safeR:zc});l.sealed=!!e,t.fx3d(i,r,l),O.play(\"bell_ding\",.5,2);const d=a+1.6;s.hiddenUntil=t.time+d,t.addFx(Je(\"fx_smoke\",s.x,s.y,{add:!1,scale:.9*(s.def.scale??1)})),t.events.onAnnounce(c(e?\"¡La campana está sellada! Mata a {name} en {n} s\":\"¡Ponte bajo la campana!\",{name:e?c(tC(e.id)):\"\",n:(e==null?void 0:e.secs)??0}));let h=null;e&&!((v=t.coop)!=null&&v.replica)&&t.schedule(.6,()=>{const x=n.rnd()*Math.PI*2;let[k,M]=[i+Re(x)*220,r+Le(x)*220];t.walk&&([k,M]=t.walk.nearestWalkable(k,M)),h=t.spawnBoss(e.id,k,M),h&&(h.maxHp=h.hp=Math.round(h.maxHp*(e.hp/h.def.hp)))});const u=new sk({text:\"\",style:{fontFamily:\"Nunito, Segoe UI, sans-serif\",fontSize:30,fontWeight:\"900\",fill:16773590,stroke:{color:5904916,width:5}},resolution:2});u.anchor.set(.5,1);const p=new Qe;p.addChild(u);let y=0,w=Math.ceil(a),f=!1,m=!1;return t.addFx({view:p,upright:!0,lift:560,anchor:{x:i,y:r},update(x){var M;if(y+=x/1e3,s.dead)return l.finish(),!0;s.sprite.alpha=f?Math.min(1,s.sprite.alpha+x/300):Math.max(0,1-y/.3);const k=a-y;if(!f){l.charge=Math.min(1,y/a);const $=Math.max(0,Math.ceil(k));u.text=String($),u.style.fill=l.sealed?16747130:16773590,$<w&&(w=$,$<=3&&O.play(\"bell_ding\",.35,3)),e&&!h&&((M=t.coop)!=null&&M.replica)&&(h=t.enemies.find(P=>P.def.id===e.id&&!P.dead)??null),e&&l.sealed&&h&&h.dead&&y<=e.secs+.6&&(l.sealed=!1,t.events.onAnnounce(c(\"¡La campana se ha abierto! Ponte debajo\")),O.play(\"bell_ding\",.6,2)),e&&l.sealed&&!m&&y>e.secs+.6&&(m=!0,t.events.onAnnounce(c(\"¡Demasiado tarde! La campana sigue sellada\")))}if(!f&&k<=0){f=!0,u.text=\"\",l.toll(),O.play(\"bell_toll\",.9,2),t.shake(.7,10);const $=we(t.player.x-i,t.player.y-r)<zc-4;!t.player.dead&&(l.sealed||!$)&&t.hurtPlayer(eC,s,!0),s.x=i,s.y=r+30,s.hiddenUntil=0,t.addFx(Je(\"fx_smoke\",s.x,s.y,{add:!1,scale:.9*(s.def.scale??1)})),t.schedule(.9,()=>l.finish())}return f?(p.alpha=0,y>a+1.6):!1}}),d}}"
+}

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.4.1
-// @description  寶箱智能追首選、保留首選定向重抽、五欄均衡、定時停翻牌、周目遠征與結算裝備整理。
+// @version      1.5.0
+// @description  寶箱並列優先級、時間／技能總等級停翻牌、三系目標數優先、智能重抽與結算裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

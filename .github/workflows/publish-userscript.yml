@@ -1,0 +1,63 @@
+name: Publish userscript
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/publish-userscript.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-userscript
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Verify and build
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm test
+          node scripts/build-release.cjs --repository "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/ro-userscript-dist"
+      - name: Publish stable update branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin userscript-release > /dev/null; then
+            git fetch origin userscript-release
+            git switch --force-create userscript-release FETCH_HEAD
+          else
+            git switch --orphan userscript-release
+          fi
+          cp "$RUNNER_TEMP/ro-userscript-dist/ro-survivors-helper.user.js" .
+          cp "$RUNNER_TEMP/ro-userscript-dist/ro-survivors-helper.meta.js" .
+          cp "$RUNNER_TEMP/ro-userscript-dist/release.json" .
+          cp "$RUNNER_TEMP/ro-userscript-dist/README.md" .
+          git add ro-survivors-helper.user.js ro-survivors-helper.meta.js release.json README.md
+          if git diff --cached --quiet; then
+            echo "Already published; no changes."
+            exit 0
+          fi
+          git commit -m "Publish userscript"
+          git push origin HEAD:userscript-release

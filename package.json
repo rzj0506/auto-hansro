@@ -1,0 +1,13 @@
+{
+  "name": "auto-hansro",
+  "version": "1.3.1",
+  "private": true,
+  "description": "ro.hans幸存者助手，基于用户提供的 v1.3.0 开发",
+  "scripts": {
+    "test": "node --check src/ro-survivors-helper.user.js && node --test test/*.test.cjs",
+    "build": "node scripts/build-release.cjs --repository rzj0506/auto-hansro"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

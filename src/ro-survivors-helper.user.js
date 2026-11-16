@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         RO 倖存者：三系法術與寶箱助手
+// @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.3.0
-// @description  可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
-// @homepageURL  https://github.com/rzj0506/auto-ro-survivors
-// @updateURL    https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.meta.js
-// @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.user.js
+// @version      1.3.1
+// @description  局內技能與寶箱獨立允許重抽、可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
+// @homepageURL  https://github.com/rzj0506/auto-hansro
+// @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
+// @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -38,7 +38,7 @@
   };
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
-    skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true,
+    skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     lootRange: 1800, partyRoll: 'greed',
@@ -172,7 +172,7 @@ self.onmessage = event => {
     const configured = Object.values(cfg.priorities).some(x => splitTiers(x).length);
     if (!ranked.length) return { type: 'wait', reason: '沒有可識別卡片' };
     const good = ranked.some(c => c.tier === 0);
-    if (configured && !good && budget.used < cfg.maxRerolls && cfg.rerollMode !== 'off') {
+    if (cfg.chestReroll !== false && configured && !good && budget.used < cfg.maxRerolls && cfg.rerollMode !== 'off') {
       const cardChoices = ranked.filter(c => c.canReroll && budget.card > cfg.reserveCard && splitTiers(cfg.priorities[c.slot]).length)
         .filter(c => {
           // 有完整物品表時，只在該欄位確實有目標可抽時使用單張重抽。
@@ -193,7 +193,7 @@ self.onmessage = event => {
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     if (typeof raw.fourth === 'string') out.fourth = raw.fourth.slice(0, 100).trim();
     if (typeof raw.fifth === 'string') out.fifth = raw.fifth.slice(0, 100).trim();
     if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
@@ -727,7 +727,7 @@ self.onmessage = event => {
     const g = state.game;
     ui.querySelector('#toggle').textContent = cfg.enabled ? '暫停 (F8)' : '啟動 (F8)';
     ui.querySelector('#toggle').classList.toggle('on', cfg.enabled);
-    ui.querySelector('#mini').textContent = `RO ${cfg.enabled ? '▶' : 'Ⅱ'}`;
+    ui.querySelector('#mini').textContent = `ro.hans ${cfg.enabled ? '▶' : 'Ⅱ'}`;
     ui.querySelector('#status').textContent = `${cfg.enabled ? '運行中' : '已暫停'} · ${g ? `本局 ${g.state}` : state.bridge}\n${state.message}`;
     const owned = ownedSkills();
     ui.querySelector('#owned').textContent = `本局技能 ${owned.length}/${cfg.skillSlots}（不含普攻）：` + (owned.map(id => SKILL_NAMES[id] || state.registry[id]?.name || id).join('、') || '等待進入遊戲');
@@ -806,9 +806,9 @@ self.onmessage = event => {
       input[type=radio]{width:auto;accent-color:#5ad5ac}#fifth-field[hidden]{display:none}#banish-list{max-height:190px;overflow:auto;border:1px solid #31425d;border-radius:6px;padding:6px;margin-top:6px}#banish-list label{margin:3px 0}
       #drag-handle,#mini{touch-action:none;cursor:grab}#drag-handle strong{user-select:none}#drag-handle button{cursor:pointer}
     </style>
-    <button id="mini" title="點擊展開／收起，按住拖動移位 (F9)">RO Ⅱ</button>
+    <button id="mini" title="ro.hans幸存者助手：點擊展開／收起，按住拖動移位 (F9)">ro.hans</button>
     <section id="panel" hidden>
-      <div class="top" id="drag-handle"><strong title="按住標題拖動">RO 助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
+      <div class="top" id="drag-handle"><strong title="按住標題拖動">ro.hans幸存者助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
       <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
       <p id="owned" class="hint"></p>
@@ -818,6 +818,10 @@ self.onmessage = event => {
       <label><input data-setting="rarityFirst" type="checkbox"> 技能升級先比稀有度，再比目標／急速／傷害</label>
       <small>固定三技：火箭術／冰箭術／雷擊術。寶箱固定先比使用者優先級，同級才比稀有度；本開關只影響技能升級。</small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
+      <details open><summary>重抽設定</summary>
+      <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
+      <small>兩個開關獨立生效。技能僅在沒有合規選項時重抽整組，關閉後等待手動選擇；寶箱關閉後按現有牌優先級與下方處理方式選擇或等待。沿用下方重抽上限與保留次數。</small>
+      </details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -844,7 +848,6 @@ self.onmessage = event => {
       <label>尋找掉落物最大距離<input data-setting="lootRange" type="number" min="100" max="12000"></label>
       <label>組隊掉落分配<select data-setting="partyRoll"><option value="greed">貪婪</option><option value="need">需求</option><option value="pass">放棄</option><option value="manual">等待手動</option></select></label>
       <label>每次選卡等待毫秒<input data-setting="delay" type="number" min="850" max="5000"></label>
-      <label><input data-setting="skillReroll" type="checkbox"> 無合規技能牌時有限重抽整組</label>
       <p class="hint">安全目標中優先寶箱與磁鐵，再拾取其他掉落。方向鍵／WASD 或畫面點擊後讓出操作 3 秒。背景模式會暫時關閉遊戲「離開自動暫停」，並用背景時鐘繼續運行；保留手動暫停。瀏覽器凍結／卸載分頁或電腦休眠仍會中斷。</p>
       <div class="buttons"><button id="rescan">重新識別</button><button id="diagnose">顯示診斷</button></div><pre id="log"></pre>
       </details>

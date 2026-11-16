@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.4.0
-// @description  五欄補齊與均衡升級、定時停翻牌、周目遠征、結算穿裝／按品質出售、背景掛機。
+// @version      1.4.1
+// @description  寶箱智能追首選、保留首選定向重抽、五欄均衡、定時停翻牌、周目遠征與結算裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

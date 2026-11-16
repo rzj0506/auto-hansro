@@ -85,7 +85,7 @@ async function browserFixture(saved = {}) {
   w.localStorage.setItem(STORAGE, JSON.stringify({ background: false, dodge: false, pickups: false, ...saved }));
   const hooks = { start: [], tick: [], hurt: [], cast: [], kill: [] };
   const registry = Object.fromEntries([...C.FIXED, 'soul_strike', 'napalm'].map(id => [id, { name: ({ firebolt: '火箭術', coldbolt: '冰箭術', lightning: '雷擊術', soul_strike: '聖靈召喚', napalm: '心靈爆破' })[id] }]));
-  const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' } };
+  const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' }, e_hp: { id: 'e_hp', slot: 'elixir', name: '生命秘藥' }, b_dmg: { id: 'b_dmg', slot: 'blessing', name: '傷害祝福' } };
   w.__testImport = async () => ({ hooks, registry, items });
   w.eval(source.replace('await import(urls[0])', 'await window.__testImport(urls[0])'));
   await new Promise(resolve => setImmediate(resolve));
@@ -119,7 +119,7 @@ async function browserFixture(saved = {}) {
     advance(100); advance(1100);
     return counts;
   }
-  return { w, ui, game, hooks, setting, advance, picker, errors, close() { assert.deepEqual(errors, []); dom.window.close(); } };
+  return { w, ui, game, hooks, items, setting, advance, picker, errors, close() { assert.deepEqual(errors, []); dom.window.close(); } };
 }
 
 for (const skillReroll of [false, true]) for (const chestReroll of [false, true]) {
@@ -397,5 +397,70 @@ test('navigation uses short native direction keys and releases them when paused'
     f.ui.querySelector('#mini').focus();
     f.advance(1000); assert.deepEqual(down,['ArrowRight','ArrowUp']);
     f.ui.querySelector('#toggle').click(); assert.deepEqual(up,['ArrowRight','ArrowUp']);
+  } finally {f.close();}
+});
+
+function chestScenario(f, owned={}) {
+  const d=f.w.document, picker=d.querySelector('#picker'), counts={card:0,deck:0,picks:[],used:[]};
+  f.w.__nativeChestItems=f.items;
+  const nativePool=f.w.eval(`(function(ws){return ${native.chestSlotItems}})(window.__nativeChestItems)`);
+  f.game.runItems={slots:new Map(Object.entries(owned)),slotItems:nativePool,
+    roll(){assert.fail('advisor must not roll to inspect probabilities')},rollSlot(){assert.fail('advisor must not advance RNG to inspect a pool')}};
+  f.game.deityLearned=()=>[];
+  f.game.chestOpts=()=>({swap:false,banished:new Set(),useless:new Set()});
+  function used() {f.ui.querySelector('#diagnose').click();counts.used.push(JSON.parse(f.ui.querySelector('#config').value).usedRerolls);}
+  function draw(ids, actions={}) {
+    f.game.state='levelup';picker.classList.remove('hidden');d.querySelector('#pk-title').textContent='寶箱';
+    d.querySelector('#pk-cards').innerHTML='';
+    ids.forEach(id=>{
+      const item=f.items[id],slot=d.createElement('div');slot.className='pk-slot';
+      slot.innerHTML=`<button class="pk-card"><span class="pk-name">${item.name}</span><span class="pk-sub">${{potion:'藥水',elixir:'秘藥',blessing:'祝福'}[item.slot]}</span><span class="pk-badge">稀有</span><span class="pk-lines">測試</span></button><button class="pk-act" title="重抽單張">重抽<small>9</small></button>`;
+      slot.querySelector('.pk-act').onclick=()=>{counts.card++;f.game.perksLeft.reroll_card--;used();actions.card?.(id)};
+      slot.querySelector('.pk-card').onclick=()=>{counts.picks.push(id);f.game.runItems.slots.set(item.slot,{item:id,vals:[1]});actions.pick?.(id)};
+      d.querySelector('#pk-cards').append(slot);
+    });
+    d.querySelector('#pk-bar').innerHTML='<button class="pk-act" title="重抽整組">重抽<small>9</small></button>';
+    d.querySelector('#pk-bar .pk-act').onclick=()=>{counts.deck++;f.game.perksLeft.reroll--;used();actions.deck?.()};
+  }
+  function closePicker(){picker.classList.add('hidden');f.game.state='playing';}
+  return {draw,counts,closePicker};
+}
+
+test('native pool adapter holds a first-tier card and single-rerolls the other type until it hits',async()=>{
+  const f=await browserFixture({priorities:{potion:'p_cd',elixir:'e_dmg'}});
+  try {
+    const scene=chestScenario(f,{elixir:{item:'e_dmg',vals:Array(13).fill(1)}});
+    f.game.openingChest={id:1};
+    const actions={card(id){assert.equal(id,'p_hp');scene.draw(['e_dmg','p_cd'],{pick:scene.closePicker})},deck(){assert.fail('must not discard existing first tier')}};
+    scene.draw(['e_dmg','p_hp'],actions);
+    for(let i=0;i<8;i++)f.advance(1200);
+    assert.equal(scene.counts.card,1);assert.equal(scene.counts.deck,0);assert.deepEqual(scene.counts.picks,['p_cd']);
+    assert.deepEqual(scene.counts.used,[1]);
+  } finally {f.close();}
+});
+
+test('deck-to-single transitions preserve per-box count, while consecutive boxes reset without hiding the picker',async()=>{
+  const f=await browserFixture({priorities:{potion:'p_cd',elixir:'e_dmg'},maxRerolls:2});
+  try {
+    const scene=chestScenario(f,{blessing:{item:'b_dmg',vals:Array(13).fill(1)}});
+    function box(index){
+      f.game.openingChest={id:index};
+      const miss=index===1?'p_hp':'e_hp',hit=index===1?'p_cd':'e_dmg';
+      scene.draw(['b_dmg'],{deck(){scene.draw([miss],{card(){scene.draw([hit],{pick(){if(index===1)box(2);else scene.closePicker()}})}})}});
+    }
+    box(1);for(let i=0;i<16;i++)f.advance(1200);
+    assert.equal(scene.counts.deck,2);assert.equal(scene.counts.card,2);
+    assert.deepEqual(scene.counts.picks,['p_cd','e_dmg']);assert.deepEqual(scene.counts.used,[1,2,1,2]);
+  } finally {f.close();}
+});
+
+for(const exhausted of ['best','wait'])test(`same chest redraw never resets the cap; exhausted=${exhausted} remains respected`,async()=>{
+  const f=await browserFixture({priorities:{potion:'p_cd'},maxRerolls:2,exhausted});
+  try {
+    const scene=chestScenario(f);f.game.openingChest={id:'same'};
+    function miss(){scene.draw(['p_hp'],{card:miss,pick:scene.closePicker})}
+    miss();for(let i=0;i<12;i++)f.advance(1200);
+    assert.equal(scene.counts.card,2);assert.equal(scene.counts.deck,0);assert.deepEqual(scene.counts.used,[1,2]);
+    assert.deepEqual(scene.counts.picks,exhausted==='best'?['p_hp']:[]);
   } finally {f.close();}
 });

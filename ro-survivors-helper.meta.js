@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.3.1
-// @description  局內技能與寶箱獨立允許重抽、可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
+// @version      1.4.0
+// @description  五欄補齊與均衡升級、定時停翻牌、周目遠征、結算穿裝／按品質出售、背景掛機。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

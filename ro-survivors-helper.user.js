@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.5.1
-// @description  寶箱前兩欄整組／後三欄單張優先、並列優先級、時間／等級停翻牌與結算裝備整理。
+// @version      1.6.0
+// @description  月夜貓鐘罩自動避難、寶箱智能重抽與並列優先級、時間／等級停翻牌與結算裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.5.1';
+  const VERSION = '1.6.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -37,7 +37,7 @@
     lightning: ['雷擊術', '雷撃術', 'Lightning Bolt', 'Saeta de rayo'],
   };
   const DEFAULTS = {
-    enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
+    enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, pickups: true, background: true,
     skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     chestFillFirst: true, chestSmartReroll: true, noFlipEnabled: false, noFlipMinutes: 10,
     noFlipLevelEnabled: false, noFlipTotalLevel: 100,
@@ -295,7 +295,7 @@ self.onmessage = event => {
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     if ([1, 2, 3].includes(Number(raw.expeditionLap))) out.expeditionLap = Number(raw.expeditionLap);
     if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
     if (Number.isFinite(Number(raw.noFlipTotalLevel))) out.noFlipTotalLevel = clamp(Math.round(Number(raw.noFlipTotalLevel)), 1, 99999);
@@ -330,12 +330,33 @@ self.onmessage = event => {
     if (z.kind === 'cone') return r < z.r + pad && (r < pad * 2 || Math.abs(Math.atan2(Math.sin(Math.atan2(dy, dx) - z.ang), Math.cos(Math.atan2(dy, dx) - z.ang))) < z.half + pad / Math.max(r, 1));
     return false;
   }
-  // 在世界座標評估靜止及 24 個方向，按途經風險排序，最後才考慮寶箱距離。
+  // 僅讀取原生鐘罩特效；普通地面預警不具有這組欄位與方法。
+  function readBellShelters(effects) {
+    if (!Array.isArray(effects)) return [];
+    return effects.flatMap(effect => {
+      const radius = effect?.groundMat?.uniforms?.safeR?.value, position = effect?.mesh?.position;
+      if (!effect?.bellMat || typeof effect.toll !== 'function' || typeof effect.finish !== 'function'
+        || typeof effect.sealed !== 'boolean' || !Number.isFinite(effect.waveAge)
+        || !Number.isFinite(effect.out) || effect.out >= 0 || !Number.isFinite(effect.charge)
+        || !Number.isFinite(radius) || radius <= 24 || radius > 2000
+        || !Number.isFinite(position?.x) || !Number.isFinite(position?.z)) return [];
+      // 原生傷害邊界為 safeR - 4，再留 18 世界單位餘量。
+      return [{ effect, x: position.x, y: position.z, radius: radius - 22, outerRadius: radius,
+        sealed: effect.sealed, struck: effect.waveAge >= 0, charge: clamp(effect.charge, 0, 1) }];
+    });
+  }
+  function chooseBellShelter(shelters, player, previous = null) {
+    return [...shelters].sort((a, b) => Number(a.sealed) - Number(b.sealed)
+      || Number(b.effect === previous) - Number(a.effect === previous)
+      || Math.hypot(a.x - player.x, a.y - player.y) - Math.hypot(b.x - player.x, b.y - player.y))[0] || null;
+  }
+  // 一般按途經風險排序；鐘罩倒數時優先入罩，入罩後在邊界內避怪。
   function planMove(scene, cfg) {
-    const { player: p, enemies, target, bounds: b, walkable, zones = [] } = scene;
+    const { player: p, enemies, target, bounds: b, walkable, zones = [], shelter } = scene;
+    const sheltered = shelter && Math.hypot(p.x - shelter.x, p.y - shelter.y) <= shelter.radius;
     const speed = Math.max(40, scene.speed || 180), horizon = .75;
     const candidates = [{ dx: 0, dy: 0 }];
-    for (let i = 0; i < 24; i++) candidates.push({ dx: Math.cos(i * Math.PI / 12), dy: Math.sin(i * Math.PI / 12) });
+    for (let i = 0; i < 24; i++) candidates.push({ dx: Math.cos(i * Math.PI / 12), dy: Math.sin(i * Math.PI / 12), cap: sheltered ? shelter.radius * .5 : Infinity });
     const goal = target || p;
     const goalDistance = Math.hypot(goal.x - p.x, goal.y - p.y);
     if (target && goalDistance > 0) candidates.push({ dx: (goal.x - p.x) / goalDistance, dy: (goal.y - p.y) / goalDistance, cap: goalDistance });
@@ -346,6 +367,7 @@ self.onmessage = event => {
       for (let j = 1; j <= 6; j++) {
         const t = j / 6 * horizon, travel = Math.min(speed * t, c.cap ?? Infinity), x = p.x + c.dx * travel, y = p.y + c.dy * travel;
         if (b && (x < b.x0 + 6 || x > b.x1 - 6 || y < b.y0 + 6 || y > b.y1 - 6) || walkable && !walkable(last.x, last.y, x, y)) { valid = false; break; }
+        if (sheltered && Math.hypot(x - shelter.x, y - shelter.y) > shelter.radius) { valid = false; break; }
         for (const e of enemies) {
           const ex = e.x + (e.vx || 0) * t, ey = e.y + (e.vy || 0) * t;
           const clear = Math.hypot(x - ex, y - ey) - (e.radius || 18) - 12;
@@ -360,12 +382,13 @@ self.onmessage = event => {
       if (!valid) continue;
       const distance = Math.hypot(last.x - goal.x, last.y - goal.y);
       const inertia = scene.previous ? c.dx * scene.previous.dx + c.dy * scene.previous.dy : 0;
-      const score = risk * 10 + distance * .35 - Math.min(180, minClear) * .2 - inertia * 6;
+      const score = shelter && !sheltered ? Math.min(150000, risk * 10) + distance * 10000 - inertia * 6
+        : risk * 10 + distance * .35 - Math.min(180, minClear) * .2 - inertia * 6;
       if (!best || score < best.score) best = { ...c, x: last.x, y: last.y, score, risk };
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -380,7 +403,7 @@ self.onmessage = event => {
     pickerNode: null, pickerType: '', chestToken: null, born: 0, used: 0, pending: null, skillUsed: 0,
     manualUntil: 0, moveOwned: false, previous: null, velocities: new WeakMap(),
     lastMove: 0, lastGameTime: 0, errorCount: 0, zones: new Set(), observedGame: null,
-    route: null,
+    route: null, bell: null, bellRoute: null, bellStatus: '尚無鐘罩機制',
     stages: [], flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '',
     revealNode: null, revealAt: 0, revealClicked: false, lastListRead: 0,
     settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
@@ -552,7 +575,7 @@ self.onmessage = event => {
   function observeGame(g) {
     if (!g?.player || typeof g.moveTo !== 'function' || !Array.isArray(g.enemies)) return;
     if (state.game === g) return;
-    stopMove(); state.game = g; state.route = null; state.velocities = new WeakMap(); resetPicker();
+    stopMove(); state.game = g; state.route = null; state.bell = null; state.bellRoute = null; state.bellStatus = '尚無鐘罩機制'; state.velocities = new WeakMap(); resetPicker();
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
     state.noFlipDone = false; state.postRun = null; releaseTownKeys();
@@ -944,7 +967,7 @@ self.onmessage = event => {
     }
     return false;
   }
-  function movement(now) {
+  function movement(now, shelter = null) {
     const g = state.game;
     if (!g || !visible($('#hud')) || g.state !== 'playing' || g.player.dead || now < state.manualUntil || (document.hidden && !cfg.background) || (!document.hidden && editingSettings()) || g.replayMoves) { stopMove(); return; }
     if (!cfg.dodge && !cfg.chests && !cfg.pickups) { stopMove(); return; }
@@ -953,7 +976,7 @@ self.onmessage = event => {
     const p = g.player;
     const enemies = [];
     for (const e of g.enemies) {
-      if (e.dead || e.removed || !Number.isFinite(e.x) || Math.hypot(e.x - p.x, e.y - p.y) > 950) continue;
+      if (e.dead || e.removed || e.hiddenUntil > g.time || !Number.isFinite(e.x) || Math.hypot(e.x - p.x, e.y - p.y) > 950) continue;
       const old = state.velocities.get(e), dt = old ? g.time - old.time : 0;
       const vx = dt > 0 && dt < .6 ? clamp((e.x - old.x) / dt, -400, 400) : 0;
       const vy = dt > 0 && dt < .6 ? clamp((e.y - old.y) / dt, -400, 400) : 0;
@@ -961,8 +984,19 @@ self.onmessage = event => {
       enemies.push({ x: e.x, y: e.y, vx, vy, radius: e.radius ?? e.def?.radius ?? 18 * (e.def?.scale ?? 1) });
     }
     enemies.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
-    const targets = pickupTargets(g.pickups, p, g.zeny, g.chestCost(), cfg, enemies.slice(0, 100));
-    let goal = null;
+    let goal = shelter ? { x: shelter.x, y: shelter.y } : null;
+    if (shelter && g.walk && Math.hypot(p.x - shelter.x, p.y - shelter.y) > shelter.radius) {
+      if (state.bellRoute?.effect !== shelter.effect || state.bellRoute.until < now) {
+        const [x, y] = g.walk.nearestWalkable(shelter.x, shelter.y);
+        state.bellRoute = { effect: shelter.effect, until: now + 250,
+          points: Math.hypot(x - shelter.x, y - shelter.y) <= shelter.radius ? g.walk.pathTo(p.x, p.y, x, y) || [] : [] };
+      }
+      while (state.bellRoute.points.length && Math.hypot(state.bellRoute.points[0].x - p.x, state.bellRoute.points[0].y - p.y) < 12) state.bellRoute.points.shift();
+      state.bellRoute.unreachable = !state.bellRoute.points.length;
+      if (state.bellRoute.unreachable) { stopMove(); return; }
+      goal = state.bellRoute.points[0];
+    }
+    const targets = shelter ? [] : pickupTargets(g.pickups, p, g.zeny, g.chestCost(), cfg, enemies.slice(0, 100));
     // 遊戲拾取判定使用玩家 y-20，所有掉落物目標需加回 20。
     for (const target of targets.slice(0, 5)) {
       const destination = { x: target.x, y: target.y };
@@ -978,7 +1012,7 @@ self.onmessage = event => {
     if (!cfg.dodge && !goal) { stopMove(); return; }
     const zones = readZones();
     // 僅尋寶時仍評估路徑安全，怪物優先於拾箱。
-    const scene = { player: p, enemies: enemies.slice(0, 100), zones, target: goal, bounds: g.bounds, previous: state.previous,
+    const scene = { player: p, enemies: enemies.slice(0, 100), zones, target: goal, shelter, bounds: g.bounds, previous: state.previous,
       speed: g.classDef.speed * 1.3 * g.stats.speedMult * (1 + g.buffValue('speed')) * (1 - g.buffValue('slow')),
       walkable: g.walk ? (ax, ay, bx, by) => {
         if (!g.walk.walkable(bx, by)) return false;
@@ -990,6 +1024,36 @@ self.onmessage = event => {
     // 只呼叫與滑鼠移動相同的尋路入口；角色仍以遊戲原速度行走。
     g.moveTo(best.x, best.y); state.moveOwned = true; state.previous = best;
   }
+  function bellStep(now) {
+    const g = state.game;
+    const shelters = g && cfg.dodge && cfg.bellShelter ? readBellShelters(g.world3d?.cylinders) : [];
+    const bell = g && chooseBellShelter(shelters, g.player, state.bell?.effect);
+    if (!bell) {
+      if (state.bell) {
+        stopMove(); state.route = null; state.bellRoute = null;
+        log('鐘罩機制結束，恢復普通避怪與拾取');
+      }
+      state.bell = null;
+      state.bellStatus = '尚無鐘罩機制';
+      return false;
+    }
+    const changed = state.bell?.effect !== bell.effect || state.bell?.sealed !== bell.sealed;
+    state.bell = bell;
+    const inside = Math.hypot(g.player.x - bell.x, g.player.y - bell.y) <= bell.radius;
+    state.bellStatus = bell.sealed ? '封印鐘尚未解除，進罩也不安全；需先擊殺九尾狐'
+      : bell.struck ? '鐘聲已發動，暫留罩內'
+      : inside ? '已進入鐘罩，倒數期間保持在罩內' : '鐘罩倒數中，優先進罩並暫停拾取';
+    if (changed) {
+      stopMove(); state.route = null; state.bellRoute = null;
+      state.lastMove = 0; state.lastGameTime = -1;
+      log(state.bellStatus);
+    }
+    // 選牌／暫停時不移動，讓原有流程先完成；封印狀態僅提示，不改寫原生機制。
+    if (g.state !== 'playing' || g.player.dead || !visible($('#hud')) || g.replayMoves) return false;
+    movement(now, bell);
+    if (!inside && state.bellRoute?.unreachable) state.bellStatus = '鐘罩路徑不可達，請手動走位' + (bell.sealed ? '；封印未解除仍不安全' : '');
+    return true;
+  }
   function tick() {
     try {
       if (!cfg.enabled) return;
@@ -999,6 +1063,7 @@ self.onmessage = event => {
       const now = performance.now();
       if (now < state.manualUntil) { stopMove(); return; }
       if (now - state.lastListRead > 1000) { state.lastListRead = now; if (visible($('#stages'))) readStages(); }
+      if (bellStep(now)) { state.errorCount = 0; return; }
       if (collectReveal(now)) return;
       timedNoFlip();
       if (postRunStep(now)) return;
@@ -1028,6 +1093,7 @@ self.onmessage = event => {
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
+    ui.querySelector('#bell-status').textContent = !cfg.dodge || !cfg.bellShelter ? '鐘罩避難未啟用（需同時開啟自動避怪）' : state.bellStatus;
     ui.querySelector('#skill-total').textContent = `本局技能總等級（含普攻）：${readTotalSkillLevel() ?? '等待讀取'}`;
     const filled = chestFilledSlots(ownedChestSlots());
     ui.querySelector('#chest-stage').textContent = cfg.chestSmartReroll === false ? '寶箱策略：依設定的先後順序' :
@@ -1110,6 +1176,7 @@ self.onmessage = event => {
       <div class="top" id="drag-handle"><strong title="按住標題拖動">ro.hans幸存者助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
       <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
+      <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
       <p id="owned" class="hint"></p>
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
@@ -1218,6 +1285,8 @@ self.onmessage = event => {
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+        bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
+          ...(state.bell ? { x: state.bell.x, y: state.bell.y, radius: state.bell.radius, sealed: state.bell.sealed, struck: state.bell.struck, charge: state.bell.charge } : {}) },
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };

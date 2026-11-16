@@ -85,7 +85,7 @@ async function browserFixture(saved = {}) {
   w.localStorage.setItem(STORAGE, JSON.stringify({ background: false, dodge: false, pickups: false, ...saved }));
   const hooks = { start: [], tick: [], hurt: [], cast: [], kill: [] };
   const registry = Object.fromEntries([...C.FIXED, 'soul_strike', 'napalm'].map(id => [id, { name: ({ firebolt: '火箭術', coldbolt: '冰箭術', lightning: '雷擊術', soul_strike: '聖靈召喚', napalm: '心靈爆破' })[id] }]));
-  const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' }, e_hp: { id: 'e_hp', slot: 'elixir', name: '生命秘藥' }, b_dmg: { id: 'b_dmg', slot: 'blessing', name: '傷害祝福' } };
+  const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, p_dmg: { id: 'p_dmg', slot: 'potion', name: '傷害藥水' }, p_area: { id: 'p_area', slot: 'potion', name: '範圍藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' }, e_hp: { id: 'e_hp', slot: 'elixir', name: '生命秘藥' }, b_dmg: { id: 'b_dmg', slot: 'blessing', name: '傷害祝福' } };
   w.__testImport = async () => ({ hooks, registry, items });
   w.eval(source.replace('await import(urls[0])', 'await window.__testImport(urls[0])'));
   await new Promise(resolve => setImmediate(resolve));
@@ -463,4 +463,52 @@ for(const exhausted of ['best','wait'])test(`same chest redraw never resets the 
     assert.equal(scene.counts.card,2);assert.equal(scene.counts.deck,0);assert.deepEqual(scene.counts.used,[1,2]);
     assert.deepEqual(scene.counts.picks,exhausted==='best'?['p_hp']:[]);
   } finally {f.close();}
+});
+
+test('priority picker adds parallel items to selected tiers and preserves groups through save/import/reload',async()=>{
+  const f=await browserFixture();let saved;
+  try {
+    const picker=f.ui.querySelector('[data-catalog="potion"]'),tier=f.ui.querySelector('[data-priority-tier="potion"]');
+    const add=id=>{picker.value=id;picker.dispatchEvent(new f.w.Event('change',{bubbles:true}))};
+    assert.equal(tier.value,'new');add('p_cd');assert.equal(tier.value,'0');add('p_hp');
+    tier.value='new';add('p_dmg');assert.equal(tier.value,'1');add('p_area');add('p_cd');
+    const groups=()=>C.splitTiers(f.ui.querySelector('[data-priority="potion"]').value).map(group=>group.map(C.tokenId));
+    assert.deepEqual(groups(),[['p_cd','p_hp'],['p_dmg','p_area']]);
+    f.ui.querySelector('#export').click();saved=JSON.parse(f.ui.querySelector('#config').value);
+    assert.deepEqual(C.splitTiers(saved.priorities.potion).map(g=>g.map(C.tokenId)),groups());
+    f.ui.querySelector('#import').click();assert.deepEqual(groups(),[['p_cd','p_hp'],['p_dmg','p_area']]);
+    saved=JSON.parse(f.w.localStorage.getItem(STORAGE));
+  }finally{f.close();}
+  const reload=await browserFixture(saved);
+  try{assert.deepEqual(C.splitTiers(reload.ui.querySelector('[data-priority="potion"]').value).map(g=>g.map(C.tokenId)),[['p_cd','p_hp'],['p_dmg','p_area']]);}
+  finally{reload.close();}
+});
+
+test('native no-flip triggers on total including basic attack before the enabled minute condition is reached',async()=>{
+  const f=await browserFixture({noFlipEnabled:true,noFlipMinutes:10,noFlipLevelEnabled:true,noFlipTotalLevel:50});
+  try{
+    const levels={firebolt:10,coldbolt:10,lightning:10,soul_strike:10,atk_staff:9};
+    f.game.basicAttack='atk_staff';f.game.skillLevel=id=>levels[id];f.game.time=5;
+    f.w.document.body.insertAdjacentHTML('beforeend','<div id="pause" class="hidden"><div class="ro-body"></div></div>');
+    f.w.__nf={g:f.game};f.w.eval(`(${native.noFlipClient})(window.__nf,{T:{btn:'之後不再翻牌',btnOn:'已關閉翻牌',row:'升級翻牌'},CSS:''})`);
+    f.advance(1000);assert.equal(f.game.roNoFlip,undefined);assert.match(f.ui.querySelector('#skill-total').textContent,/49/);
+    levels.atk_staff=10;f.advance(1000);assert.equal(f.game.roNoFlip,true);
+    f.ui.querySelector('#diagnose').click();const report=JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(report.totalSkillLevels,50);assert.equal(report.noFlip.levelEnabled,true);assert.equal(report.noFlip.applied,true);
+    assert.match(f.ui.querySelector('#status').textContent,/含普攻/);
+    f.ui.querySelector('#export').click();const exported=JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(exported.noFlipLevelEnabled,true);assert.equal(exported.noFlipTotalLevel,50);assert.equal(exported.noFlipEnabled,true);
+  }finally{f.close();}
+});
+
+test('actual skill picker selects ordinary fixed target upgrade over legendary damage',async()=>{
+  const f=await browserFixture({rarityFirst:true});
+  try{
+    const d=f.w.document,picker=d.querySelector('#picker');let picked=-1;
+    picker.classList.remove('hidden');d.querySelector('#pk-title').textContent='Level Up!';
+    d.querySelector('#pk-cards').innerHTML=[['火箭術','傳說','傷害 +60%'],['冰箭術','普通','+1 目標']].map(([name,rarity,line])=>
+      `<div class="pk-slot"><button class="pk-card"><span class="pk-name">${name}</span><span class="pk-badge">${rarity}</span><span class="pk-lines">${line}</span></button></div>`).join('');
+    [...picker.querySelectorAll('.pk-card')].forEach((button,i)=>button.onclick=()=>{picked=i;picker.classList.add('hidden')});
+    f.advance(100);f.advance(1100);assert.equal(picked,1);
+  }finally{f.close();}
 });

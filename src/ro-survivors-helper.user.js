@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.4.1
-// @description  寶箱智能追首選、保留首選定向重抽、五欄均衡、定時停翻牌、周目遠征與結算裝備整理。
+// @version      1.5.0
+// @description  寶箱並列優先級、時間／技能總等級停翻牌、三系目標數優先、智能重抽與結算裝備整理。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.4.1';
+  const VERSION = '1.5.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -34,12 +34,13 @@
   const ALIASES = {
     firebolt: ['火箭術', 'Fire Bolt', 'Saeta de fuego'],
     coldbolt: ['冰箭術', 'Cold Bolt', 'Saeta de hielo'],
-    lightning: ['雷擊術', 'Lightning Bolt', 'Saeta de rayo'],
+    lightning: ['雷擊術', '雷撃術', 'Lightning Bolt', 'Saeta de rayo'],
   };
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
     skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     chestFillFirst: true, chestSmartReroll: true, noFlipEnabled: false, noFlipMinutes: 10,
+    noFlipLevelEnabled: false, noFlipTotalLevel: 100,
     autoEquip: false, autoSell: false, sellQualities: [], expeditionLap: 1,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
@@ -111,10 +112,13 @@
       if (extras.length >= limit - FIXED.length) return false;
       return wanted.length ? wanted.includes(c.id) : c.isNew && !!c.id && c.id !== 'potion';
     });
-    const ranked = eligible.map(c => ({ ...c, pref: FIXED.includes(c.id) ? upgradeOf(c.lines) : 0 }));
+    const ranked = eligible.map(c => {
+      const pref = !c.isNew && FIXED.includes(c.id) ? upgradeOf(c.lines) : 0;
+      return { ...c, pref, targetUpgrade: !c.isNew && pref === 3 };
+    });
     ranked.sort((a, b) => {
       const order = cfg.rarityFirst ? [b.rarity - a.rarity, b.pref - a.pref] : [b.pref - a.pref, b.rarity - a.rarity];
-      return order.find(Boolean) || Number(FIXED.includes(b.id)) - Number(FIXED.includes(a.id)) || a.index - b.index;
+      return Number(b.targetUpgrade) - Number(a.targetUpgrade) || order.find(Boolean) || Number(FIXED.includes(b.id)) - Number(FIXED.includes(a.id)) || a.index - b.index;
     });
     return ranked[0] || null;
   }
@@ -135,6 +139,23 @@
       const name = found?.name || (slot === 'deity' && SKILL_NAMES[id] ? `${SKILL_NAMES[id]} 神格` : ITEM_NAMES[id]);
       return name ? `${name.replace(/Deity/g, '神格')} [${id}]` : token;
     }).join(' | ')).join('\n');
+  }
+  function appendPriorityTier(value, token, requestedTier = 'new') {
+    const tiers = splitTiers(value);
+    const label = text => norm(String(text).replace(/\s*\[[^\]]+\]\s*$/, ''));
+    const same = other => {
+      const a = tokenId(other), b = tokenId(token);
+      if (a && b) return norm(a) === norm(b);
+      return norm(a || other) === norm(b || token) || label(other) === label(token)
+        || !!a && norm(a) === norm(token) || !!b && norm(b) === norm(other);
+    };
+    const existing = tiers.findIndex(tier => tier.some(same));
+    if (existing >= 0) return { value: tiers.map(tier => tier.join(' | ')).join('\n'), tier: existing, added: false };
+    const index = Number(requestedTier);
+    const tier = Number.isInteger(index) && index >= 0 && index <= tiers.length ? index : tiers.length;
+    if (tier === tiers.length) tiers.push([]);
+    tiers[tier].push(token);
+    return { value: tiers.map(group => group.join(' | ')).join('\n'), tier, added: true };
   }
   const pickupPriority = kind => kind === 'chest' || kind === 'magnet' ? 0 : 1;
   function pickupTargets(pickups, player, zeny, cost, cfg, enemies = []) {
@@ -242,13 +263,35 @@ self.onmessage = event => {
     const dx = target.x - player.x, dy = target.y - player.y;
     return [Math.abs(dx) > 18 ? dx > 0 ? 'ArrowRight' : 'ArrowLeft' : '', Math.abs(dy) > 18 ? dy > 0 ? 'ArrowDown' : 'ArrowUp' : ''].filter(Boolean);
   }
-  const noFlipDue = (game, config) => !!(config.noFlipEnabled && Number.isFinite(game?.time) && game.time >= config.noFlipMinutes * 60 && ['playing', 'levelup'].includes(game.state));
+  function sumSkillLevels(ids, read) {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) return null;
+    let total = 0;
+    for (const id of unique) {
+      let level;
+      try { level = read(id); } catch { return null; }
+      if (!Number.isFinite(level) || level < 0) return null;
+      total += level;
+    }
+    return total;
+  }
+  function totalSkillLevels(game) {
+    if (!game?.basicAttack || !Array.isArray(game.slots)) return null;
+    return sumSkillLevels([...game.slots, game.basicAttack], id => {
+      if (typeof game.skillLevel === 'function') return game.skillLevel(id);
+      return game.weapons?.find(skill => skill.id === id)?.rank ?? game.passiveRank?.get?.(id);
+    });
+  }
+  const noFlipDue = (game, config, totalLevel = totalSkillLevels(game)) => !!(['playing', 'levelup'].includes(game?.state)
+    && (config.noFlipEnabled && Number.isFinite(game?.time) && game.time >= config.noFlipMinutes * 60
+      || config.noFlipLevelEnabled && Number.isFinite(totalLevel) && totalLevel >= config.noFlipTotalLevel));
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     if ([1, 2, 3].includes(Number(raw.expeditionLap))) out.expeditionLap = Number(raw.expeditionLap);
     if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
+    if (Number.isFinite(Number(raw.noFlipTotalLevel))) out.noFlipTotalLevel = clamp(Math.round(Number(raw.noFlipTotalLevel)), 1, 99999);
     if (Array.isArray(raw.sellQualities)) out.sellQualities = [...new Set(raw.sellQualities.filter(q => Number.isInteger(q) && q >= 0 && q <= 4))].sort();
     if (typeof raw.fourth === 'string') out.fourth = raw.fourth.slice(0, 100).trim();
     if (typeof raw.fifth === 'string') out.fifth = raw.fifth.slice(0, 100).trim();
@@ -315,7 +358,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove, townDirection, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -435,6 +478,14 @@ self.onmessage = event => {
     syncBackground();
     log(cfg.enabled ? '已啟動' : '已暫停'); renderStatus();
   }
+  function syncPriorityTiers(slot, preferred) {
+    const select = ui?.querySelector(`[data-priority-tier="${slot}"]`);
+    if (!select) return;
+    const tiers = splitTiers(cfg.priorities[slot]);
+    const chosen = preferred === undefined ? select.value : String(preferred);
+    select.innerHTML = tiers.map((tier, index) => `<option value="${index}">第 ${index + 1} 級（並列）</option>`).join('') + '<option value="new">新增優先級</option>';
+    select.value = chosen === 'new' || /^\d+$/.test(chosen) && Number(chosen) < tiers.length ? chosen : tiers.length ? '0' : 'new';
+  }
   function refreshCatalog() {
     const game = state.game;
     const abs = value => value ? new URL(value, location.href).href : '';
@@ -452,6 +503,7 @@ self.onmessage = event => {
         select.value = old;
         const area = ui.querySelector(`[data-priority="${slot}"]`);
         if (area !== ui.activeElement) area.value = displayPriority(cfg.priorities[slot], slot, items);
+        syncPriorityTiers(slot);
       }
       ui.querySelector('#skills-list').innerHTML = Object.entries(state.registry).filter(([id]) => !id.startsWith('atk_')).map(([id, d]) => `<option value="${esc(`${d.name} [${id}]`)}"></option>`).join('');
       for (const key of ['fourth', 'fifth']) {
@@ -599,15 +651,32 @@ self.onmessage = event => {
     } catch { /* 適配器不可用時沿用已知欄位與物品表，不試抽、不消耗亂數 */ }
     return context;
   }
+  function readTotalSkillLevel() {
+    const total = totalSkillLevels(state.game);
+    if (total !== null) return total;
+    const basic = basicAttackId();
+    if (!basic) return null;
+    const slots = [...document.querySelectorAll('#skillbar .skill-slot[data-skill],#lu-sockets .skill-slot[data-skill]')];
+    return sumSkillLevels([...ownedSkills(), basic], id => {
+      const label = slots.find(el => el.dataset.skill === id)?.querySelector('.lvl')?.textContent;
+      const value = label?.match(/\d+/)?.[0];
+      return value === undefined ? null : Number(value);
+    });
+  }
   function timedNoFlip() {
-    if (state.noFlipDone || !noFlipDue(state.game, cfg)) return;
+    if (state.noFlipDone || !cfg.noFlipEnabled && !cfg.noFlipLevelEnabled) return;
+    const total = cfg.noFlipLevelEnabled ? readTotalSkillLevel() : null;
+    if (!noFlipDue(state.game, cfg, total)) return;
     if (state.game.roNoFlip) { state.noFlipDone = true; return; }
     const check = $('#nf-check'), button = $('#nf-btn');
     if (check && !check.disabled && check.checked) {
       check.checked = false; check.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (visible(button) && !button.disabled && !button.classList.contains('on')) button.click();
     else return;
-    state.noFlipDone = true; log(`本局已達 ${cfg.noFlipMinutes} 分鐘，已開啟「之後不再翻牌」；寶箱照常處理`);
+    const reasons = [];
+    if (cfg.noFlipEnabled && state.game.time >= cfg.noFlipMinutes * 60) reasons.push(`局內 ${cfg.noFlipMinutes} 分鐘`);
+    if (cfg.noFlipLevelEnabled && Number.isFinite(total) && total >= cfg.noFlipTotalLevel) reasons.push(`技能總等級 ${total}/${cfg.noFlipTotalLevel}（含普攻）`);
+    state.noFlipDone = true; log(`已達${reasons.join('、')}，已開啟「之後不再翻牌」；寶箱照常處理`);
   }
   function actPicker(now) {
     const picker = $('#picker');
@@ -952,6 +1021,7 @@ self.onmessage = event => {
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
+    ui.querySelector('#skill-total').textContent = `本局技能總等級（含普攻）：${readTotalSkillLevel() ?? '等待讀取'}`;
     ui.querySelector('#log').textContent = state.logs.slice(-10).map(e => `${e.time} ${e.message}`).join('\n');
   }
   function populate() {
@@ -962,7 +1032,11 @@ self.onmessage = event => {
       else if (el.type === 'radio') el.checked = Number(el.value) === value;
       else el.value = value;
     }
-    for (const el of ui.querySelectorAll('[data-priority]')) el.value = displayPriority(cfg.priorities[el.dataset.priority], el.dataset.priority, state.catalog);
+    for (const el of ui.querySelectorAll('[data-priority]')) {
+      const slot = el.dataset.priority;
+      el.value = displayPriority(cfg.priorities[slot], slot, state.catalog);
+      syncPriorityTiers(slot, splitTiers(cfg.priorities[slot]).length ? '0' : 'new');
+    }
     readStages(); renderExclusions(); renderStatus();
   }
   function fitPanelPosition(remember = false) {
@@ -1029,17 +1103,19 @@ self.onmessage = event => {
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
       <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 個技能時生效"></label>
-      <label><input data-setting="rarityFirst" type="checkbox"> 技能升級先比稀有度，再比目標／急速／傷害</label>
-      <small>固定三技：火箭術／冰箭術／雷擊術。寶箱固定先比使用者優先級，同級才比稀有度；本開關只影響技能升級。</small>
+      <label><input data-setting="rarityFirst" type="checkbox"> 其餘技能牌先比稀有度，再比急速／傷害</label>
+      <small>火箭術／冰箭術／雷擊術的「增加目標數」升級固定優先於稀有度；同為目標數升級再比稀有度。本開關只調整其餘技能牌，寶箱遵守獨立優先級。</small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
       <details open><summary>重抽設定</summary>
       <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
       <small>兩個開關獨立生效。技能僅在沒有合規選項時重抽整組，關閉後等待手動選擇；寶箱關閉後按現有牌優先級與下方處理方式選擇或等待。沿用下方重抽上限與保留次數。</small>
       </details>
-      <details><summary>定時關閉升級翻牌</summary>
-      <label><input data-setting="noFlipEnabled" type="checkbox"> 啟用定時「之後不再翻牌」</label>
+      <details><summary>之後不再翻牌觸發條件</summary>
+      <label><input data-setting="noFlipEnabled" type="checkbox"> 按局內時間啟用「之後不再翻牌」</label>
       <label>本局經過幾分鐘後開啟<input data-setting="noFlipMinutes" type="number" min="0" max="180" step="0.1"></label>
-      <small>使用遊戲局內時間，每局重新計時；只關閉之後的技能升級翻牌，寶箱照常。到時執行一次；0 表示開局後即啟用。</small></details>
+      <label><input data-setting="noFlipLevelEnabled" type="checkbox"> 按技能總等級啟用「之後不再翻牌」</label>
+      <label>本局技能總等級達到<input data-setting="noFlipTotalLevel" type="number" min="1" max="99999" step="1"></label>
+      <small id="skill-total"></small><br><small>兩項可同時勾選，任一達標即開啟。技能總等級＝本局已擁有技能＋普攻的當前等級之和，每個技能只計一次；每局重新計算、觸發一次。只關閉之後的技能翻牌，寶箱照常；時間 0 表示開局後即啟用。</small></details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -1063,8 +1139,8 @@ self.onmessage = event => {
       <label><input data-setting="chestSmartReroll" type="checkbox"> 智能追首選：按目標類型選擇單張／整組重抽</label>
       <label><input data-setting="chestFillFirst" type="checkbox"> 同優先級先補空欄、讓神格成型，再均衡等級</label>
       <small>先比配置優先級，空欄次優不會壓過首選。目標類型在牌面時單抽，不在時才考慮整組；已有首選時保住它，只單抽其他牌尋找更需要的首選，不整組冒險。普通物品填欄後通常鎖定品種，不對抽不到的目標浪費次數。</small>
-      <p class="hint">每行一級，第一行為第一優先級；同級用 | 分隔。選入後顯示「中文名稱 [ID]」，舊版純 ID 自動補中文。空白＝無指定。可保留名稱與 ID 一起排序，或只填名稱／ID。包含匹配須寫 *傷害*。</p>
-      ${Object.entries(SLOT_NAMES).map(([id, name]) => `<h4>${name}</h4><select data-catalog="${id}"><option>等待物品表…</option></select><textarea data-priority="${id}" placeholder="第一優先級\n第二優先級 | 同級另一項"></textarea>`).join('')}
+      <p class="hint">每行一級，同一行可並列多項（用 | 分隔）。先選要加入的級別，再從物品表選入；同級自動並列，選「新增優先級」另起一級。任一並列首選命中都視為第一優先級。空白＝無指定；可填名稱／ID，包含匹配須寫 *傷害*。</p>
+      ${Object.entries(SLOT_NAMES).map(([id, name]) => `<h4>${name}</h4><label>加入哪個優先級<select data-priority-tier="${id}" aria-label="${name}加入優先級"><option value="new">新增優先級</option></select></label><select data-catalog="${id}"><option>等待物品表…</option></select><textarea data-priority="${id}" placeholder="第一優先級 A | 第一優先級 B\n第二優先級 C | 第二優先級 D"></textarea>`).join('')}
       <label>允許的重抽方式／非智能模式先後順序<select data-setting="rerollMode"><option value="card-deck">單張＋整組（非智能時先單張）</option><option value="deck-card">整組＋單張（非智能時先整組）</option><option value="card">僅重抽單張</option><option value="deck">僅重抽整組</option><option value="off">不重抽</option></select></label>
       <small>智能開啟時依可達目標決定方式；關閉後依上述先後順序，遇到首選即選。僅單張／僅整組／不重抽始終有效。重抽遵守上限及保留次數，不為稀有度單獨追抽；首選全部留空時不重抽。</small>
       <div class="row"><label>每箱重抽上限<input data-setting="maxRerolls" type="number" min="0" max="50"></label><label>保留單張次數<input data-setting="reserveCard" type="number" min="0" max="99"></label><label>保留整組次數<input data-setting="reserveDeck" type="number" min="0" max="99"></label></div>
@@ -1091,7 +1167,7 @@ self.onmessage = event => {
     ui.addEventListener('keyup', e => e.stopPropagation());
     ui.addEventListener('input', e => {
       const el = e.target;
-      if (el.dataset.priority) { cfg.priorities[el.dataset.priority] = el.value.slice(0, 5000); save(); }
+      if (el.dataset.priority) { cfg.priorities[el.dataset.priority] = el.value.slice(0, 5000); syncPriorityTiers(el.dataset.priority); save(); }
       if (el.id === 'banish-filter') renderExclusions();
     });
     ui.addEventListener('change', e => {
@@ -1109,10 +1185,13 @@ self.onmessage = event => {
       if (el.dataset.exclude) {
         cfg.banishExclude = el.checked ? [...new Set([...cfg.banishExclude, el.dataset.exclude])] : cfg.banishExclude.filter(id => id !== el.dataset.exclude);
       }
-      if (el.dataset.priority) cfg.priorities[el.dataset.priority] = el.value.slice(0, 5000);
+      if (el.dataset.priority) { cfg.priorities[el.dataset.priority] = el.value.slice(0, 5000); syncPriorityTiers(el.dataset.priority); }
       if (el.dataset.catalog && el.value) {
         const slot = el.dataset.catalog, area = ui.querySelector(`[data-priority="${slot}"]`);
-        area.value = [area.value.trim(), displayPriority(el.value, slot, state.catalog)].filter(Boolean).join('\n'); cfg.priorities[slot] = area.value; el.value = '';
+        const result = appendPriorityTier(cfg.priorities[slot], displayPriority(el.value, slot, state.catalog), ui.querySelector(`[data-priority-tier="${slot}"]`)?.value);
+        area.value = displayPriority(result.value, slot, state.catalog); cfg.priorities[slot] = area.value;
+        syncPriorityTiers(slot, result.tier); el.value = '';
+        if (!result.added) log(`該物品已在第 ${result.tier + 1} 優先級，已保留原設定`);
       }
       save(); syncBackground(); renderStatus();
     });
@@ -1127,7 +1206,7 @@ self.onmessage = event => {
     ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
-      const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+      const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };

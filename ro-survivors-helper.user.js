@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.6.0
-// @description  月夜貓鐘罩自動避難、寶箱智能重抽與並列優先級、時間／等級停翻牌與結算裝備整理。
+// @version      1.7.0
+// @description  六周目與新地圖開荒、自動下一張與跨周目、鐘罩避難、寶箱智能重抽及結算裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.6.0';
+  const VERSION = '1.7.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -23,8 +23,12 @@
   const STAGES = [
     ['prontera', '普隆德拉原野'], ['sewer', '普隆德拉地下水道'], ['sunken', '失事輪'], ['byalan', '柏伊亞嵐島'],
     ['payon', '斐揚森林'], ['payon_cave', '斐揚洞穴'], ['prt_castle', '普隆德拉城'], ['orcs', '獸人村'],
-    ['pyramid', '夢羅克金字塔'], ['maze', '迷宮森林'],
+    ['pyramid', '夢羅克金字塔'], ['maze', '迷宮森林'], ['xmas', '聖誕節'], ['louyang', '元宵節'],
   ];
+  // 2026-11-17 原生清單：六周目、12 張地圖；城堡是劇情關，後續周目跳過。
+  const LAP_LABELS = ['一周目', '二周目', '三周目', '四周目', '五周目', '六周目'];
+  const LAP_SUFFIXES = ['', '・改', '・改²', '・改³', '・改⁴', '・改⁵'];
+  const STAGE_ALIASES = ['Campos de Prontera', 'Alcantarillas de Prontera', 'Barco hundido', 'Isla de Byalan', 'Bosque de Payon', 'Cueva de Payon', 'Castillo de Prontera', 'Aldea orca', 'Pirámides de Morroc', 'Bosque laberinto', 'Navidad', 'Festival de los Faroles'];
   const ITEM_NAMES = {
     p_regen: '回復藥水', p_cd: '冷卻藥水', p_hp: '生命藥水', p_armor: '護甲藥水', p_area: '範圍藥水', p_pickup: '採集藥水', p_greed: '貪婪藥水', p_speed: '速度藥水', p_cast: '詠唱藥水', p_reach: '近戰範圍藥水', p_dmg: '傷害藥水',
     e_crit: '爆擊秘藥', e_dmg: '傷害秘藥', e_hp: '生命秘藥', e_critdmg: '爆擊傷害秘藥', e_surprise: '驚奇秘藥', e_dot: '持續傷害秘藥', e_dodge: '迴避秘藥', e_cast: '詠唱秘藥', e_area: '範圍秘藥', e_armor: '護甲秘藥',
@@ -43,7 +47,7 @@
     noFlipLevelEnabled: false, noFlipTotalLevel: 100,
     autoEquip: false, autoSell: false, sellQualities: [], expeditionLap: 1,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
-    repeat: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
+    repeat: false, progression: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     lootRange: 1800, partyRoll: 'greed',
     rerollMode: 'card-deck', maxRerolls: 6, reserveCard: 0, reserveDeck: 0,
     exhausted: 'best', delay: 1000, safety: 65, chestRange: 2400,
@@ -295,8 +299,8 @@ self.onmessage = event => {
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
-    if ([1, 2, 3].includes(Number(raw.expeditionLap))) out.expeditionLap = Number(raw.expeditionLap);
+    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    if (Number.isInteger(Number(raw.expeditionLap)) && Number(raw.expeditionLap) >= 1 && Number(raw.expeditionLap) <= 99) out.expeditionLap = Number(raw.expeditionLap);
     if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
     if (Number.isFinite(Number(raw.noFlipTotalLevel))) out.noFlipTotalLevel = clamp(Math.round(Number(raw.noFlipTotalLevel)), 1, 99999);
     if (Array.isArray(raw.sellQualities)) out.sellQualities = [...new Set(raw.sellQualities.filter(q => Number.isInteger(q) && q >= 0 && q <= 4))].sort();
@@ -313,6 +317,22 @@ self.onmessage = event => {
     }
     for (const slot of Object.keys(SLOT_NAMES)) if (typeof raw.priorities?.[slot] === 'string') out.priorities[slot] = raw.priorities[slot].slice(0, 5000);
     return out;
+  }
+  function nextExpedition(stages, config, laps = []) {
+    const index = stages.findIndex(s => s.id === config.expedition);
+    if (index < 0) return { type: 'wait', reason: '找不到設定的副本，請重新讀取副本清單' };
+    const current = stages[index];
+    if (!config.progression || current.cleared !== true && !(config.expeditionLap > 1 && current.storyOnly)) return { type: 'stage', stage: current };
+    const next = stages.slice(index + 1).find(s => s.cleared !== true && !(config.expeditionLap > 1 && s.storyOnly));
+    if (next) return { type: 'stage', stage: next };
+    const nextLap = config.expeditionLap + 1;
+    if (laps.some(l => l.lap === nextLap && !l.locked)) {
+      const first = stages.find(s => !s.storyOnly);
+      return first ? { type: 'lap', lap: nextLap, stage: first } : { type: 'wait', reason: '找不到下一周目起點，等待讀取地圖' };
+    }
+    const maximum = Math.max(LAP_LABELS.length, ...laps.map(l => l.lap));
+    return config.expeditionLap >= maximum ? { type: 'complete', reason: `第 ${config.expeditionLap} 周目所選地圖及後續地圖已通關，已到目前最後周目` }
+      : { type: 'wait', reason: `本周目所選地圖及後續地圖已通關，等待第 ${nextLap} 周目解鎖` };
   }
   function pointSegmentDistance(x, y, ax, ay, bx, by) {
     const dx = bx - ax, dy = by - ay;
@@ -388,7 +408,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, nextExpedition, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -404,7 +424,7 @@ self.onmessage = event => {
     manualUntil: 0, moveOwned: false, previous: null, velocities: new WeakMap(),
     lastMove: 0, lastGameTime: 0, errorCount: 0, zones: new Set(), observedGame: null,
     route: null, bell: null, bellRoute: null, bellStatus: '尚無鐘罩機制',
-    stages: [], flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '',
+    stages: [], laps: [], stageLap: 1, progressionStatus: '從所選地圖開始，已通關則自動推進', flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '', launchLap: 0,
     revealNode: null, revealAt: 0, revealClicked: false, lastListRead: 0,
     settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
@@ -552,23 +572,49 @@ self.onmessage = event => {
     choices.sort((a, b) => Number(owned.includes(b)) - Number(owned.includes(a)) || a.localeCompare(b));
     ui.querySelector('#banish-list').innerHTML = choices.filter(id => norm(`${id} ${label(id)}`).includes(query)).map(id => `<label><input type="checkbox" data-exclude="${esc(id)}"${cfg.banishExclude.includes(id) ? ' checked' : ''}> ${esc(label(id))} <small>[${esc(id)}]${owned.includes(id) || id === basic ? ' · 已擁有' : ''}</small></label>`).join('') || '<small>等待遊戲技能表，或無符合搜尋的技能。</small>';
   }
+  function readLapTabs() {
+    return [...document.querySelectorAll('#lap-tabs [data-laptab]')].map(tab => ({ lap: Number(tab.dataset.laptab),
+      label: tab.textContent.trim(), locked: tab.disabled || tab.getAttribute('aria-disabled') === 'true', selected: tab.classList.contains('primary'), tab }))
+      .filter(l => Number.isInteger(l.lap) && l.lap >= 1 && l.lap <= 99);
+  }
   function readStages() {
+    const laps = readLapTabs();
+    state.laps = laps.map(({ tab, ...lap }) => lap);
     const cards = [...document.querySelectorAll('#stg-list .stg-card')];
-    if (cards.length) state.stages = cards.map(card => {
-      const name = text(card, '.stg-card-info b').replace(/[・·]改(?:²)?\s*$/, ''), index = Number(card.dataset.i);
-      const known = STAGES.find(([, n]) => norm(n) === norm(name)) || STAGES[index];
-      return { id: known?.[0] || `name:${name}`, name, index, locked: card.classList.contains('locked') || card.classList.contains('soon') };
-    });
+    if (cards.length) {
+      state.stageLap = laps.find(l => l.selected)?.lap || 1;
+      state.stages = cards.map(card => {
+        const title = card.querySelector('.stg-card-info b')?.cloneNode(true);
+        // 特殊地圖標記是標題內的子元素，不能把「特殊關卡」當作地圖名稱。
+        if (title) for (const child of [...title.children]) child.remove();
+        const name = (title?.textContent.trim() || text(card, '.stg-card-info b')).replace(/[・·]\s*改(?:[²³⁴⁵⁶⁷⁸⁹0-9]+)?\s*$/, ''), index = Number(card.dataset.i);
+        const known = STAGES.find(([, n], i) => norm(n) === norm(name) || norm(STAGE_ALIASES[i]) === norm(name)) || (cards.length === STAGES.length ? STAGES[index] : null);
+        const id = card.dataset.stageId || card.dataset.stage || known?.[0] || `name:${name}`;
+        return { id, name, index, cleared: card.classList.contains('cleared'),
+          storyOnly: id === 'prt_castle' || /劇情關|剧情关/.test(text(card, '.stg-state')),
+          special: ['xmas', 'louyang'].includes(id) || !!card.querySelector('.ro-fs-badge'),
+          locked: card.disabled || card.classList.contains('locked') || card.classList.contains('soon') };
+      });
+    }
     if (ui) {
+      const lapSelect = ui.querySelector('[data-setting="expeditionLap"]');
+      const values = [...new Set([...LAP_LABELS.map((_, i) => i + 1), ...laps.map(l => l.lap), cfg.expeditionLap])].sort((a, b) => a - b);
+      const lapOptions = values.map(n => ({ value: n, label: laps.find(l => l.lap === n)?.label || `${LAP_LABELS[n - 1] || `第 ${n} 周目`}${LAP_SUFFIXES[n - 1] || ''}` }));
+      const lapSignature = JSON.stringify(lapOptions);
+      if (lapSelect.dataset.signature !== lapSignature) {
+        lapSelect.dataset.signature = lapSignature;
+        lapSelect.innerHTML = lapOptions.map(l => `<option value="${l.value}">${esc(l.label)}</option>`).join('');
+      }
+      lapSelect.value = String(cfg.expeditionLap);
       const options = state.stages.length ? state.stages : STAGES.map(([id, name], index) => ({ id, name, index }));
       const select = ui.querySelector('[data-setting="expedition"]');
       const signature = JSON.stringify(options);
       if (select.dataset.signature !== signature) {
         select.dataset.signature = signature;
-        select.innerHTML = options.map(stage => `<option value="${esc(stage.id)}">${esc(stage.name)}${stage.locked ? '（未開放）' : ''}</option>`).join('');
-        if (!options.some(s => s.id === cfg.expedition)) select.insertAdjacentHTML('beforeend', `<option value="${esc(cfg.expedition)}">${esc(cfg.expedition.replace(/^name:/, ''))}（等待確認）</option>`);
-        select.value = cfg.expedition;
+        select.innerHTML = options.map(stage => `<option value="${esc(stage.id)}">${esc(stage.name)}${stage.cleared ? ' ✓' : stage.locked ? '（未開放）' : ''}</option>`).join('');
       }
+      if (![...select.options].some(o => o.value === cfg.expedition)) select.insertAdjacentHTML('beforeend', `<option value="${esc(cfg.expedition)}">${esc(cfg.expedition.replace(/^name:/, ''))}（等待確認）</option>`);
+      select.value = cfg.expedition;
     }
     return cards;
   }
@@ -925,7 +971,7 @@ self.onmessage = event => {
     }
     const dialog = $('#npc-dialog');
     if (visible(dialog)) {
-      if (state.launchStage === cfg.expedition && /高難度提醒|高难度提醒|High difficulty|Dificultad alta|Dificuldade alta/i.test(text(dialog, '#npc-name'))) {
+      if (state.launchStage === cfg.expedition && state.launchLap === cfg.expeditionLap && /高難度提醒|高难度提醒|High difficulty|Dificultad alta|Dificuldade alta/i.test(text(dialog, '#npc-name'))) {
         const button = dialog.querySelector('#npc-options button.primary');
         if (button && /入場|入场|Enter|Entrar/i.test(button.textContent)) { state.launchPending = true; return flowClick(button, 'high-difficulty', now); }
         return true;
@@ -933,7 +979,7 @@ self.onmessage = event => {
       if (state.game?.state === 'over' && /未完待續|continuar|to be continued/i.test(text(dialog, '#npc-name'))) {
         return flowClick(dialog.querySelector('#npc-options button.primary'), 'continue-summary', now);
       }
-      if (state.launchStage === cfg.expedition && dialog.querySelector('#npc-text .diff')) {
+      if (state.launchStage === cfg.expedition && state.launchLap === cfg.expeditionLap && dialog.querySelector('#npc-text .diff')) {
         const button = [...dialog.querySelectorAll('#npc-options button')].find(b => /前往野外|ir al campo|go to the field/i.test(b.textContent));
         if (button) { state.launchPending = true; return flowClick(button, 'difficulty', now); }
         log('遠征確認不是單人出發流程，等待手動確認'); return true;
@@ -941,22 +987,35 @@ self.onmessage = event => {
       return true;
     }
     if (visible($('#stages'))) {
-      const tabs = [...document.querySelectorAll('#lap-tabs [data-laptab]')];
-      const currentLap = Number(tabs.find(t => t.classList.contains('primary'))?.dataset.laptab || 1);
+      const tabs = readLapTabs();
+      const currentLap = tabs.find(t => t.selected)?.lap || 1;
       if (currentLap !== cfg.expeditionLap) {
-        const tab = tabs.find(t => Number(t.dataset.laptab) === cfg.expeditionLap);
-        if (!tab || tab.disabled) { log(`第 ${cfg.expeditionLap} 周目尚未解鎖，等待手動處理`); return true; }
-        return flowClick(tab, `lap:${cfg.expeditionLap}`, now);
+        const target = tabs.find(t => t.lap === cfg.expeditionLap);
+        if (!target || target.locked) { log(`第 ${cfg.expeditionLap} 周目尚未解鎖，等待手動處理`); return true; }
+        return flowClick(target.tab, `lap:${cfg.expeditionLap}`, now);
       }
       const cards = readStages();
-      const stage = state.stages.find(s => s.id === cfg.expedition);
+      const decision = nextExpedition(state.stages, cfg, state.laps);
+      if (decision.type === 'wait' || decision.type === 'complete') { state.progressionStatus = decision.reason; log(decision.reason); return true; }
+      if (decision.type === 'lap' || decision.stage.id !== cfg.expedition) {
+        cfg.expedition = decision.stage.id;
+        if (decision.type === 'lap') cfg.expeditionLap = decision.lap;
+        state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; save();
+        ui.querySelector('[data-setting="expedition"]').value = cfg.expedition;
+        ui.querySelector('[data-setting="expeditionLap"]').value = String(cfg.expeditionLap);
+        state.progressionStatus = `開荒推進：第 ${cfg.expeditionLap} 周目 · ${decision.stage.name}`;
+        log(state.progressionStatus);
+        if (decision.type === 'lap') return flowClick(tabs.find(t => t.lap === decision.lap).tab, `lap:${decision.lap}`, now);
+      }
+      const stage = decision.stage;
       const card = stage && cards.find(c => Number(c.dataset.i) === stage.index);
       if (!card) { log('找不到設定的副本；請重新讀取副本清單'); return true; }
-      if (stage.locked) { log(`副本未開放：${stage.name}；等待手動調整`); return true; }
+      if (stage.locked) { state.progressionStatus = `等待解鎖：${stage.name}`; log(`副本未開放：${stage.name}；請檢查前置通關、裝備評分、職業或劇情要求`); return true; }
       if (!card.classList.contains('sel')) return flowClick(card, `stage:${cfg.expedition}`, now);
       const go = $('#stg-go');
-      if (!visible(go) || go.disabled) { log(`無法出發：${stage.name}；請檢查裝備評分、職業或劇情要求`); return true; }
-      state.launchStage = cfg.expedition;
+      if (!visible(go) || go.disabled) { state.progressionStatus = `等待出發條件：${stage.name}`; log(`無法出發：${stage.name}；請檢查裝備評分、職業或劇情要求`); return true; }
+      state.launchStage = cfg.expedition; state.launchLap = cfg.expeditionLap;
+      if (cfg.progression) state.progressionStatus = `正在開荒：第 ${cfg.expeditionLap} 周目 · ${stage.name}；未通關則重試本圖`;
       if (flowClick(go, `depart:${cfg.expedition}`, now)) log(`自動遠征：${stage.name}，沿用遊戲目前的難度設定`);
       return true;
     }
@@ -1091,7 +1150,7 @@ self.onmessage = event => {
     ui.querySelector('#exclude-toggle').textContent = cfg.banishExcludeEnabled ? '停用排除放逐的技能' : '啟用排除放逐的技能';
     ui.querySelector('#exclude-toggle').classList.toggle('on', cfg.banishExcludeEnabled);
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
-    ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
+    ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '自動遠征已啟用' : '自動遠征已關閉'} · ${cfg.progression ? '首通開荒' : '固定副本'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}${cfg.progression ? `\n${state.progressionStatus}` : ''}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
     ui.querySelector('#bell-status').textContent = !cfg.dodge || !cfg.bellShelter ? '鐘罩避難未啟用（需同時開啟自動避怪）' : state.bellStatus;
     ui.querySelector('#skill-total').textContent = `本局技能總等級（含普攻）：${readTotalSkillLevel() ?? '等待讀取'}`;
@@ -1200,12 +1259,13 @@ self.onmessage = event => {
       <p class="hint">啟動後，先對牌面中「已擁有」的技能／普攻使用遊戲放逐按鈕，再選技能。未擁有的新技能不放逐。排除名單啟用後，勾選的技能會保留；勾選「普攻（所有武器）」可統一保護普攻。</p>
       <small id="exclude-count"></small><input id="banish-filter" placeholder="搜尋排除技能：中文名稱或 ID"><div id="banish-list"></div>
       </details>
-      <details><summary>指定副本重複遠征</summary>
-      <label><input data-setting="repeat" type="checkbox"> 啟用自動重複遠征</label>
-      <label>遠征周目<select data-setting="expeditionLap"><option value="1">一周目</option><option value="2">二周目・改</option><option value="3">三周目・改²</option></select></label>
-      <label>要重複的副本<select data-setting="expedition"></select></label><button id="read-stages">讀取遊戲副本清單</button>
+      <details><summary>自動遠征／新周目開荒</summary>
+      <label><input data-setting="repeat" type="checkbox"> 啟用自動遠征（固定重刷／開荒）</label>
+      <label><input data-setting="progression" type="checkbox"> 首通開荒：通關後下一張，完成後自動進下一周目</label>
+      <label>遠征周目<select data-setting="expeditionLap">${LAP_LABELS.map((name, i) => `<option value="${i + 1}">${name}${LAP_SUFFIXES[i]}</option>`).join('')}</select></label>
+      <label>固定副本／開荒起點<select data-setting="expedition"></select></label><button id="read-stages">讀取遊戲副本清單</button>
       <div class="row"><label>自動開局上限（0＝不限）<input data-setting="repeatLimit" type="number" min="0" max="9999"></label><label>局間等待毫秒<input data-setting="repeatDelay" type="number" min="1500" max="60000"></label></div>
-      <p id="repeat-status" class="hint"></p><small>單人遠征結算後返回隊長，選定副本並沿用目前難度出發。首次請在隊長附近或開啟遠征清單；未解鎖、副本條件不符或組隊確認時等待手動操作。</small>
+      <p id="repeat-status" class="hint"></p><small>開荒需同時勾選自動遠征：從所選地圖開始，按原生已通關標記推進，失敗重試；包含聖誕節、元宵節，後續周目跳過劇情關。當所選地圖及其後續地圖通關後，切換已解鎖的下一周目，六周目完成後等待。關閉開荒則固定重刷所選副本。沿用目前難度，先完成勾選的結算裝備整理；未解鎖或評分不足時等待手動處理。</small>
       </details>
       <details><summary>結算後裝備整理</summary>
       <label><input data-setting="autoEquip" type="checkbox"> 打完副本後自動一鍵穿更優裝備</label>
@@ -1254,7 +1314,7 @@ self.onmessage = event => {
         const key = el.dataset.setting, wasRepeat = cfg.repeat;
         cfg = validateConfig({ ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value }); stopMove(); releaseTownKeys();
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
-        if (['repeat', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.gameoverAt = null; }
+        if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
       }
       if (el.hasAttribute('data-sell-quality')) {
         const q = Number(el.dataset.sellQuality);
@@ -1285,6 +1345,7 @@ self.onmessage = event => {
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+        expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap },
         bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
           ...(state.bell ? { x: state.bell.x, y: state.bell.y, radius: state.bell.radius, sealed: state.bell.sealed, struck: state.bell.struck, charge: state.bell.charge } : {}) },
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };

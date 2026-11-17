@@ -691,7 +691,7 @@ test('hidden Worker pulses drive native bell countdown and shelter movement with
 
 // Current native unlock rules and tab handlers, with a simulated character and
 // gear score provider. No game progress or account data is changed outside tests.
-function expeditionScenario(f, { futureLap = false } = {}) {
+function expeditionScenario(f, { futureLap = false, gearNeed, requirements = true } = {}) {
   townMarkup(f);
   const fixture = require('./fixtures/native-stages.json'), d = f.w.document;
   const saved = JSON.parse(f.w.localStorage.getItem(STORAGE));
@@ -718,11 +718,12 @@ function expeditionScenario(f, { futureLap = false } = {}) {
   })()`);
   const G = { stages: () => fixture.stages, st: id => fixture.stages.some(s => s.id === id && s.map && !s.storyOnly),
     zd: (a, id) => a.includes(id) || (fixture.mvpAliases[id] || []).some(v => a.includes(v)),
-    gs: c => c.gs, k: id => ({ gs: 1000 * (fixture.stages.findIndex(s => s.id === id) + 1) }), eh0: f.w.__baseUnlock };
+    gs: c => c.gs, k: (id, lap) => ({ gs: gearNeed ? gearNeed(id, lap) : 1000 * (fixture.stages.findIndex(s => s.id === id) + 1) }), eh0: f.w.__baseUnlock };
   const native = f.w.__makeNativeLaps(G, config);
   let selected = Math.max(0, initialStage), current = f.game;
   const launches = [], actions = [];
   const stages = d.querySelector('#stages'), dialog = d.querySelector('#npc-dialog'), gameover = d.querySelector('#gameover');
+  stages.insertAdjacentHTML('beforeend', '<div id="stg-detail"></div>');
   function eligibility(i) { return native.tab() > 1 ? native.eh(char, i, char.gs) : f.w.__baseUnlock(char, i, char.gs); }
   function render() {
     native.tabs(char, render, i => { selected = i; });
@@ -732,6 +733,12 @@ function expeditionScenario(f, { futureLap = false } = {}) {
     }).join('');
     for (const card of d.querySelectorAll('.stg-card')) card.onclick = () => { selected = +card.dataset.i; actions.push('select:' + fixture.stages[selected].id); render(); };
     const v = eligibility(selected);
+    const stage = fixture.stages[selected], need = native.tab() > 1 ? G.k(stage.id, native.tab()).gs : stage.gsMin;
+    const req = (ok, text) => `<span class="stg-req ${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'} ${text}</span>`;
+    d.querySelector('#stg-detail').innerHTML = !requirements ? '' : v.lapSkip ? '<span class="stg-req">劇情關卡，周目不用重打</span>' : [
+      v.needMvp ? req(v.mvpOk, '打倒前一關 MVP') : '', need ? req(v.gsOk, `裝備分數 ${need}（目前 ${char.gs}）`) : '',
+      stage.jobLvMin ? req(v.jobOk, `Job Lv ${stage.jobLvMin}`) : '', stage.story ? req(v.storyOk, '完成劇情') : '',
+    ].join('');
     d.querySelector('#stg-go').disabled = !v.unlocked || native.tab() === 1 && (!v.storyOk || v.closed);
   }
   d.querySelector('#lobby-prompt').onclick = () => { stages.classList.remove('hidden'); render(); };
@@ -824,14 +831,16 @@ test('fixed farming remains on the same native cleared map with campaign mode of
   } finally { f.close(); }
 });
 
-test('native gear lock blocks next campaign map and resumes when eligibility is restored', async () => {
+test('native gear lock repeatedly farms current map, then advances when score is sufficient', async () => {
   const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'payon_cave' });
   try {
     const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.char.gs = 7000; s.finish(true);
-    for (let i = 0; i < 25; i++) f.advance(900);
-    assert.equal(s.launches.length, 1); assert.equal(f.ui.querySelector('[data-setting="expedition"]').value, 'orcs');
-    assert.match(f.ui.querySelector('#status').textContent, /裝備評分/);
-    s.char.gs = 20000; s.render(); s.until(() => s.launches.length === 2); assert.equal(s.launches[1].stage, 'orcs');
+    s.until(() => s.launches.length === 2); assert.equal(s.launches[1].stage, 'payon_cave');
+    assert.equal(f.ui.querySelector('[data-setting="expedition"]').value, 'payon_cave');
+    assert.match(f.ui.querySelector('#repeat-status').textContent, /回刷/);
+    s.finish(false); s.until(() => s.launches.length === 3); assert.equal(s.launches[2].stage, 'payon_cave');
+    s.char.gs = 20000; s.finish(true); s.until(() => s.launches.length === 4); assert.equal(s.launches[3].stage, 'orcs');
+    assert.equal(f.ui.querySelector('[data-setting="expedition"]').value, 'orcs');
   } finally { f.close(); }
 });
 
@@ -874,5 +883,95 @@ test('future native lap tab is discovered without truncating the selection to si
     s.finish(true); s.until(() => s.launches.length === 2);
     assert.deepEqual(s.launches[1], { stage: 'prontera', lap: 7 });
     assert.equal(f.ui.querySelector('[data-setting="expeditionLap"]').value, '7');
+  } finally { f.close(); }
+});
+
+test('new lap first-map gear lock farms previous lap final map, then retries the new lap', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'louyang' });
+  try {
+    const s = expeditionScenario(f, { gearNeed: (id, lap) => lap >= 5 ? 30000 : 1000 });
+    s.until(() => s.launches.length === 1); s.finish(true); s.until(() => s.launches.length === 2, 60);
+    assert.deepEqual(s.launches[1], { stage: 'louyang', lap: 4 });
+    s.char.gs = 40000; s.finish(true); s.until(() => s.launches.length === 3, 60);
+    assert.deepEqual(s.launches[2], { stage: 'prontera', lap: 5 });
+  } finally { f.close(); }
+});
+
+for (const progression of [false, true]) test(`unknown gear-lock reason never starts farming; progression=${progression}`, async () => {
+  const f = await browserFixture({ repeat: true, progression, expeditionLap: 4, expedition: 'orcs' });
+  try {
+    const s = expeditionScenario(f, { requirements: false }); s.char.gs = 7000; s.render();
+    for (let i = 0; i < 20; i++) f.advance(900);
+    assert.equal(s.launches.length, 0); assert.match(f.ui.querySelector('#status').textContent, /無法出發/);
+  } finally { f.close(); }
+});
+
+test('gear and job requirements together wait instead of farming a story map', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 1, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.char.gs = 170; s.char.jobLevel = 1; s.finish(true);
+    for (let i = 0; i < 25; i++) f.advance(900);
+    assert.equal(s.launches.length, 1); assert.match(f.ui.querySelector('#status').textContent, /Job Lv/);
+  } finally { f.close(); }
+});
+
+test('farming honours shared run limit and cannot endlessly bypass the configured cap', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, repeatLimit: 2, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.char.gs = 7000; s.finish(true); s.until(() => s.launches.length === 2);
+    s.finish(true); for (let i = 0; i < 25; i++) f.advance(900);
+    assert.equal(s.launches.length, 2); assert.match(f.ui.querySelector('#status').textContent, /2 次上限/);
+  } finally { f.close(); }
+});
+
+test('post-run auto-equip raises score before rechecking, so no unnecessary farming run starts', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, autoEquip: true, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f), d = f.w.document;
+    d.querySelector('#lobby-char').onclick = () => d.querySelector('#charpanel').classList.remove('hidden');
+    d.querySelector('#cp-back').onclick = () => d.querySelector('#charpanel').classList.add('hidden');
+    d.querySelector('#cp-tab-equip').insertAdjacentHTML('beforeend', '<button id="cp-auto-btn">一鍵穿裝</button>');
+    d.querySelector('#cp-auto-btn').onclick = () => { s.char.gs = 20000; s.actions.push('equip'); };
+    s.until(() => s.launches.length === 1); s.char.gs = 7000; s.finish(true); s.until(() => s.launches.length === 2, 60);
+    assert.equal(s.launches[1].stage, 'orcs'); assert(s.actions.indexOf('equip') < s.actions.indexOf('launch:orcs'));
+  } finally { f.close(); }
+});
+
+test('a saved blocked-target config recovers its previous cleared map after refresh', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'orcs' });
+  try {
+    const s = expeditionScenario(f); s.char.gs = 7000; s.render(); s.until(() => s.launches.length === 1);
+    assert.deepEqual(s.launches[0], { stage: 'payon_cave', lap: 4 });
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).expedition, 'payon_cave');
+  } finally { f.close(); }
+});
+
+test('fixed mode with a confirmed gear-only lock does not switch to another map', async () => {
+  const f = await browserFixture({ repeat: true, progression: false, expeditionLap: 4, expedition: 'orcs' });
+  try {
+    const s = expeditionScenario(f); s.char.gs = 7000; s.render();
+    for (let i = 0; i < 20; i++) f.advance(900);
+    assert.equal(s.launches.length, 0); assert.equal(f.ui.querySelector('[data-setting="expedition"]').value, 'orcs');
+  } finally { f.close(); }
+});
+
+test('gear-only lock without a reachable cleared source waits instead of cycling between maps', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'orcs' });
+  try {
+    const s = expeditionScenario(f); s.char.gs = 0; s.render();
+    for (let i = 0; i < 20; i++) f.advance(900);
+    assert.equal(s.launches.length, 0); assert.match(f.ui.querySelector('#status').textContent, /沒有可確認已通關且可出發/);
+  } finally { f.close(); }
+});
+
+test('importing a new target discards a pending farming plan before resuming', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.char.gs = 7000; s.finish(true);
+    s.until(() => /回刷/.test(f.ui.querySelector('#repeat-status').textContent));
+    f.ui.querySelector('#export').click(); const imported = JSON.parse(f.ui.querySelector('#config').value);
+    imported.progression = false; imported.expedition = 'payon'; f.ui.querySelector('#config').value = JSON.stringify(imported);
+    f.ui.querySelector('#import').click(); f.ui.querySelector('#toggle').click();
+    s.until(() => s.launches.length === 2); assert.equal(s.launches[1].stage, 'payon');
   } finally { f.close(); }
 });

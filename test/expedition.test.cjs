@@ -65,3 +65,19 @@ test('unknown map or empty native list never advances, and unknown clear state n
   const list = stages([]); delete list.find(s => s.id === 'payon_cave').cleared;
   assert.equal(C.nextExpedition(list, config(), laps).stage.id, 'payon_cave');
 });
+
+test('only explicit native gear-score failures trigger farming, with other unmet requirements excluded', () => {
+  for (const text of ['✗ 裝備分數 8000（目前 7000）', '装备评分 8000', 'Gearscore 8000 (you have 7000)', 'Gearscore 8000 (você tem 7000)']) assert.equal(C.gearOnlyBlocked([text]), true);
+  for (const failed of [[], ['Job Lv 50'], ['裝備分數 8000', '打倒 MVP'], ['Gearscore 8000', '完成劇情']]) assert.equal(C.gearOnlyBlocked(failed), false);
+});
+
+test('farming prefers the current cleared map and excludes locked, uncleared, later and story stages', () => {
+  const list = stages(['payon', 'payon_cave', 'prt_castle', 'orcs']);
+  assert.equal(C.chooseFarmStage(list, 'pyramid', 'payon_cave').id, 'payon_cave');
+  list.find(s => s.id === 'payon_cave').locked = true;
+  assert.equal(C.chooseFarmStage(list, 'pyramid', 'payon_cave').id, 'orcs');
+  assert.equal(C.chooseFarmStage(list, 'orcs', 'missing').id, 'payon');
+  assert.equal(C.chooseFarmStage(list, 'prontera'), null);
+  assert.equal(C.chooseFarmStage(list, 'unknown'), null);
+  assert.equal(C.chooseFarmStage(list, null, 'orcs').id, 'orcs');
+});

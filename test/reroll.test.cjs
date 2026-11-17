@@ -975,3 +975,138 @@ test('importing a new target discards a pending farming plan before resuming', a
     s.until(() => s.launches.length === 2); assert.equal(s.launches[1].stage, 'payon');
   } finally { f.close(); }
 });
+
+// Execute HANS V0.13.2's actual speed controller, including the per-run reset,
+// restrictions, low-FPS downgrade and run telemetry; only the game loop is a fixture.
+function nativeSpeedScenario(f, { deferTimer = false, co = null, base = 1, pvp = false } = {}) {
+  const fixture = require('./fixtures/native-speed.json'), d = f.w.document;
+  d.body.insertAdjacentHTML('beforeend', `<div id="hud">${deferTimer ? '' : '<div id="timer-box"></div>'}</div>`);
+  Object.assign(f.game, { state: 'playing', time: 0, ticks: 0, zeny: 0, chestCost: () => 10,
+    classDef: { speed: 145 }, stats: { speedMult: 1 }, buffValue: () => 0,
+    events: { onAnnounce(text) { announcements.push(text); } } });
+  const announcements = []; f.w.__speedPvp = pvp;
+  f.w.eval(`window.__fixtureSpeed=(${fixture.client})(${JSON.stringify(fixture.config)},()=>window.__speedPvp)`);
+  const native = f.w.__fixtureSpeed; let game = f.game, clicks = 0;
+  d.addEventListener('click', e => { if (e.target.id === 'spd-btn') clicks++; }, true);
+  function frame(ms = 100) {
+    const rate = native.k(game, co, Math.min(ms, 100), base);
+    if (game.state === 'playing') { game.ticks += Math.round(Math.min(ms, 100) * rate / (fixture.config.step * 1000)); game.time += ms / 1000 * rate; }
+    f.advance(ms); return rate;
+  }
+  function nextGame() {
+    game = { ...f.game, player: { x: 500, y: 500, dead: false }, roSpd: undefined, ticks: 0, time: 0 };
+    f.hooks.start[0](game); return game;
+  }
+  return { native, frame, nextGame, announcements, get game() { return game; }, get clicks() { return clicks; }, get button() { return d.querySelector('#spd-btn'); } };
+}
+
+test('auto 2x defaults off, validates booleans, saves its checkbox and survives export/import/reload', async () => {
+  assert.equal(C.validateConfig({}).autoDoubleSpeed, false);
+  assert.equal(C.validateConfig({ autoDoubleSpeed: 'true' }).autoDoubleSpeed, false);
+  const f = await browserFixture(); let saved;
+  try {
+    const s = nativeSpeedScenario(f); s.frame(); s.frame(); assert.equal(s.game.roSpd, 1); assert.equal(s.clicks, 0);
+    f.setting('autoDoubleSpeed', true); f.ui.querySelector('#export').click(); saved = JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(saved.autoDoubleSpeed, true); f.ui.querySelector('#import').click();
+    assert.equal(f.ui.querySelector('[data-setting="autoDoubleSpeed"]').checked, true);
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled, false);
+  } finally { f.close(); }
+  const reload = await browserFixture(saved);
+  try { assert.equal(reload.ui.querySelector('[data-setting="autoDoubleSpeed"]').checked, true); }
+  finally { reload.close(); }
+});
+
+test('auto 2x clicks native expedition button once and preserves native speed telemetry', async () => {
+  const f = await browserFixture({ autoDoubleSpeed: true });
+  try {
+    const s = nativeSpeedScenario(f); const run = s.native.reg(); s.native.bind({ run: 'fixture-run' }, run);
+    s.frame(); assert.equal(s.button.textContent, '2x');
+    for (let i = 0; i < 20; i++) s.frame();
+    assert.equal(s.game.roSpd, 2); assert.equal(s.clicks, 1); assert(s.native.claim('fixture-run').x2 > 0);
+    f.ui.querySelector('#diagnose').click(); const report = JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(report.speed.enabled, true); assert.equal(report.speed.native, 2); assert.equal(report.speed.applied, true);
+  } finally { f.close(); }
+});
+
+test('auto 2x waits for native button mount without marking the run complete', async () => {
+  const f = await browserFixture({ autoDoubleSpeed: true });
+  try {
+    const s = nativeSpeedScenario(f, { deferTimer: true }); s.frame(); s.frame(); assert.equal(s.clicks, 0);
+    f.w.document.querySelector('#hud').insertAdjacentHTML('beforeend', '<div id="timer-box"></div>');
+    s.frame(); s.frame(); assert.equal(s.game.roSpd, 2); assert.equal(s.clicks, 1);
+  } finally { f.close(); }
+});
+
+test('auto 2x resets each run and waits past a stale previous-run 2x button', async () => {
+  const f = await browserFixture({ autoDoubleSpeed: true });
+  try {
+    const s = nativeSpeedScenario(f); s.frame(); s.frame(); assert.equal(s.clicks, 1);
+    s.nextGame(); f.advance(500); assert.equal(s.clicks, 1, 'old 2x display is not a new-run confirmation');
+    s.frame(); s.frame(); assert.equal(s.game.roSpd, 2); assert.equal(s.clicks, 2);
+  } finally { f.close(); }
+});
+
+test('auto 2x accepts an already enabled native speed without toggling it off', async () => {
+  const f = await browserFixture();
+  try {
+    const s = nativeSpeedScenario(f); s.frame(); s.button.click(); s.frame(); const clicks = s.clicks;
+    f.setting('autoDoubleSpeed', true); s.frame(); assert.equal(s.game.roSpd, 2); assert.equal(s.clicks, clicks);
+  } finally { f.close(); }
+});
+
+test('auto 2x applies during a run when enabled, then retains manual changes and opt-out speed', async () => {
+  const f = await browserFixture();
+  try {
+    const s = nativeSpeedScenario(f); s.frame(); f.setting('autoDoubleSpeed', true); s.frame(); s.frame();
+    f.setting('autoDoubleSpeed', false); s.frame(); assert.equal(s.game.roSpd, 2);
+    s.button.click(); s.frame(); assert.equal(s.game.roSpd, 1);
+    f.setting('autoDoubleSpeed', true); s.frame(); s.frame(); assert.equal(s.game.roSpd, 2);
+    s.button.click(); for (let i = 0; i < 10; i++) s.frame(); assert.equal(s.game.roSpd, 1);
+    assert.match(f.ui.querySelector('#speed-status').textContent, /保留遊戲降速／手動調整/);
+  } finally { f.close(); }
+});
+
+test('auto 2x respects assistant pause and game pause before applying', async () => {
+  const f = await browserFixture({ autoDoubleSpeed: true });
+  try {
+    const s = nativeSpeedScenario(f); f.ui.querySelector('#toggle').click(); s.frame(); assert.equal(s.clicks, 0);
+    f.ui.querySelector('#toggle').click(); s.game.state = 'paused'; s.frame(); assert.equal(s.clicks, 0);
+    s.game.state = 'playing'; s.frame(); s.frame(); assert.equal(s.game.roSpd, 2);
+  } finally { f.close(); }
+});
+
+for (const mode of ['coop', 'connection', 'endless', 'story', 'pvp', 'replay']) test(`auto 2x preserves native restrictions for ${mode}`, async () => {
+  const f = await browserFixture({ autoDoubleSpeed: true });
+  try {
+    const s = nativeSpeedScenario(f, { co: mode === 'connection' ? {} : null, pvp: mode === 'pvp', base: mode === 'endless' ? 4 : 1 });
+    if (mode === 'coop') s.game.coop = {};
+    if (mode === 'endless') s.game.endless = {};
+    if (mode === 'story') s.game.isStory = true;
+    if (mode === 'replay') s.game.replayMoves = [];
+    for (let i = 0; i < 3; i++) s.frame();
+    assert.equal(s.clicks, 0); assert.equal(s.game.roSpd, 1);
+  } finally { f.close(); }
+});
+
+test('native low-FPS fallback to 1x is preserved instead of being repeatedly overridden', async () => {
+  const f = await browserFixture({ autoDoubleSpeed: true });
+  try {
+    const s = nativeSpeedScenario(f); s.frame(); s.frame();
+    for (let i = 0; i < 20; i++) s.frame(500);
+    assert.equal(s.game.roSpd, 1); assert.equal(s.clicks, 1); assert.equal(s.native.state().on, false);
+    assert(s.announcements.some(t => /已自動切回/.test(t)));
+  } finally { f.close(); }
+});
+
+test('nonresponsive native speed button is attempted once and does not stall automation', async () => {
+  const f = await browserFixture();
+  try {
+    const s = nativeSpeedScenario(f); s.frame(); s.button.onclick = () => {};
+    f.setting('autoDoubleSpeed', true); for (let i = 0; i < 30; i++) s.frame();
+    assert.equal(s.clicks, 1); assert.equal(s.game.roSpd, 1);
+    assert.match(f.ui.querySelector('#log').textContent, /已嘗試切換2x/);
+    f.ui.querySelector('#diagnose').click(); const report = JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(report.speed.applied, false); assert.equal(report.speed.handled, true);
+    assert.match(f.ui.querySelector('#speed-status').textContent, /已嘗試切換2x/);
+  } finally { f.close(); }
+});

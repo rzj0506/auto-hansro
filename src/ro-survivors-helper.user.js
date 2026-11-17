@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.7.1
-// @description  六周目與新地圖開荒、自動下一張與跨周目、鐘罩避難、寶箱智能重抽及結算裝備整理。
+// @version      1.8.0
+// @description  單人遠征自動2倍速、六周目開荒與評分不足回刷、鐘罩避難、寶箱智能重抽及結算裝備整理。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.7.1';
+  const VERSION = '1.8.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -41,7 +41,7 @@
     lightning: ['雷擊術', '雷撃術', 'Lightning Bolt', 'Saeta de rayo'],
   };
   const DEFAULTS = {
-    enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, pickups: true, background: true,
+    enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, pickups: true, background: true, autoDoubleSpeed: false,
     skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     chestFillFirst: true, chestSmartReroll: true, noFlipEnabled: false, noFlipMinutes: 10,
     noFlipLevelEnabled: false, noFlipTotalLevel: 100,
@@ -299,7 +299,7 @@ self.onmessage = event => {
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     if (Number.isInteger(Number(raw.expeditionLap)) && Number(raw.expeditionLap) >= 1 && Number(raw.expeditionLap) <= 99) out.expeditionLap = Number(raw.expeditionLap);
     if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
     if (Number.isFinite(Number(raw.noFlipTotalLevel))) out.noFlipTotalLevel = clamp(Math.round(Number(raw.noFlipTotalLevel)), 1, 99999);
@@ -439,6 +439,7 @@ self.onmessage = event => {
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
     panelDrag: null, suppressMiniClickUntil: 0,
     noFlipDone: false, postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false,
+    speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
   };
   let root, panel, ui, interval, attachTimer;
   const $ = selector => document.querySelector(selector);
@@ -634,6 +635,7 @@ self.onmessage = event => {
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
     state.expeditionProbe = null; state.farmPlan = null;
+    resetAutoSpeed();
     state.noFlipDone = false; state.postRun = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -1153,6 +1155,27 @@ self.onmessage = event => {
     if (!inside && state.bellRoute?.unreachable) state.bellStatus = '鐘罩路徑不可達，請手動走位' + (bell.sealed ? '；封印未解除仍不安全' : '');
     return true;
   }
+  function resetAutoSpeed() {
+    state.speedDone = false; state.speedApplied = false; state.speedAttempted = false; state.speedAttemptAt = 0; state.speedStatus = '等待進入單人遠征';
+  }
+  function autoSpeedStep(now) {
+    if (!cfg.autoDoubleSpeed || state.speedDone) return;
+    const g = state.game;
+    if (!g || g.state !== 'playing' || g.player.dead || !visible($('#hud'))) return;
+    if (g.coop || g.endless || g.isStory || g.replayMoves) { state.speedStatus = '目前模式不使用單人遠征2x'; return; }
+    const button = $('#spd-btn');
+    // roSpd 由原生本局第一幀初始化；先等它，避免讀到上一局殘留的按鈕狀態。
+    if (![1, 2].includes(g.roSpd) || !visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') { state.speedStatus = '等待本局原生倍速按鈕'; return; }
+    const isOn = () => button.getAttribute('aria-pressed') === 'true' && /^2x$/i.test(button.textContent.trim());
+    if (g.roSpd === 2 || isOn()) { state.speedDone = true; state.speedApplied = true; state.speedStatus = '本局已啟用原生2x'; log(state.speedStatus); return; }
+    if (state.speedAttempted) {
+      if (now - state.speedAttemptAt >= 1500) { state.speedDone = true; state.speedStatus = '已嘗試切換2x，保留遊戲目前速度，請查看原生按鈕'; log(state.speedStatus); }
+      return;
+    }
+    if (button.getAttribute('aria-pressed') !== 'false' || !/^1x$/i.test(button.textContent.trim())) { state.speedStatus = '原生倍速狀態待確認'; return; }
+    state.speedAttempted = true; state.speedAttemptAt = now; button.click();
+    if (isOn()) { state.speedDone = true; state.speedApplied = true; state.speedStatus = '本局已自動切換原生2x'; log(state.speedStatus); }
+  }
   function tick() {
     try {
       if (!cfg.enabled) return;
@@ -1161,6 +1184,7 @@ self.onmessage = event => {
       if (window.RO_DEAD || $('#ro-tab-dead')) { stopMove(); log('遊戲分頁已停用，請先在遊戲中恢復'); return; }
       const now = performance.now();
       if (now < state.manualUntil) { stopMove(); return; }
+      autoSpeedStep(now);
       if (now - state.lastListRead > 1000) { state.lastListRead = now; if (visible($('#stages'))) readStages(); }
       if (bellStep(now)) { state.errorCount = 0; return; }
       if (collectReveal(now)) return;
@@ -1192,6 +1216,8 @@ self.onmessage = event => {
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '自動遠征已啟用' : '自動遠征已關閉'} · ${cfg.progression ? '首通開荒' : '固定副本'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}${cfg.progression ? `\n${state.progressionStatus}` : ''}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
+    ui.querySelector('#speed-status').textContent = !cfg.autoDoubleSpeed ? '自動2x未啟用' : state.speedApplied && g?.roSpd === 1
+      ? '本局自動2x已處理；目前1x，保留遊戲降速／手動調整' : state.speedStatus;
     ui.querySelector('#bell-status').textContent = !cfg.dodge || !cfg.bellShelter ? '鐘罩避難未啟用（需同時開啟自動避怪）' : state.bellStatus;
     ui.querySelector('#skill-total').textContent = `本局技能總等級（含普攻）：${readTotalSkillLevel() ?? '等待讀取'}`;
     const filled = chestFilledSlots(ownedChestSlots());
@@ -1283,6 +1309,8 @@ self.onmessage = event => {
       <label><input data-setting="rarityFirst" type="checkbox"> 其餘技能牌先比稀有度，再比急速／傷害</label>
       <small>火箭術／冰箭術／雷擊術的「增加目標數」升級固定優先於稀有度；同為目標數升級再比稀有度。本開關只調整其餘技能牌，寶箱遵守獨立優先級。</small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
+      <label><input data-setting="autoDoubleSpeed" type="checkbox"> 進入單人遠征自動2倍速</label><small id="speed-status"></small>
+      <small>需啟動助手，每局只設定一次；局中勾選也可生效。保留遊戲因卡頓降速及手動改速，取消勾選不改變當前速度。</small>
       <details open><summary>重抽設定</summary>
       <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
       <small>兩個開關獨立生效。技能僅在沒有合規選項時重抽整組，關閉後等待手動選擇；寶箱關閉後按現有牌優先級與下方處理方式選擇或等待。沿用下方重抽上限與保留次數。</small>
@@ -1353,6 +1381,7 @@ self.onmessage = event => {
       if (el.dataset.setting) {
         const key = el.dataset.setting, wasRepeat = cfg.repeat;
         cfg = validateConfig({ ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value }); stopMove(); releaseTownKeys();
+        if (key === 'autoDoubleSpeed') resetAutoSpeed();
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
         if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.expeditionProbe = null; state.farmPlan = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
       }
@@ -1385,6 +1414,7 @@ self.onmessage = event => {
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+        speed: { enabled: cfg.autoDoubleSpeed, native: g?.roSpd, applied: state.speedApplied, handled: state.speedDone, attempted: state.speedAttempted, status: state.speedStatus },
         expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap, probe: state.expeditionProbe, farming: state.farmPlan },
         bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
           ...(state.bell ? { x: state.bell.x, y: state.bell.y, radius: state.bell.radius, sealed: state.bell.sealed, struck: state.bell.struck, charge: state.bell.charge } : {}) },
@@ -1393,7 +1423,7 @@ self.onmessage = event => {
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);

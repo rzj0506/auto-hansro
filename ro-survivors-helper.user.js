@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.7.0
+// @version      1.7.1
 // @description  六周目與新地圖開荒、自動下一張與跨周目、鐘罩避難、寶箱智能重抽及結算裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.7.0';
+  const VERSION = '1.7.1';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -334,6 +334,15 @@ self.onmessage = event => {
     return config.expeditionLap >= maximum ? { type: 'complete', reason: `第 ${config.expeditionLap} 周目所選地圖及後續地圖已通關，已到目前最後周目` }
       : { type: 'wait', reason: `本周目所選地圖及後續地圖已通關，等待第 ${nextLap} 周目解鎖` };
   }
+  function gearOnlyBlocked(failedRequirements) {
+    return failedRequirements.length > 0 && failedRequirements.every(t => /gear\s*score|裝備(?:分數|評分)|装备(?:分数|评分)/i.test(t));
+  }
+  function chooseFarmStage(stages, targetId, preferredId) {
+    const index = targetId === null ? stages.length : stages.findIndex(s => s.id === targetId);
+    if (index < 0) return null;
+    const eligible = stages.slice(0, index).filter(s => s.cleared === true && !s.locked && !s.storyOnly);
+    return eligible.find(s => s.id === preferredId) || eligible.at(-1) || null;
+  }
   function pointSegmentDistance(x, y, ax, ay, bx, by) {
     const dx = bx - ax, dy = by - ay;
     const t = clamp(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1), 0, 1);
@@ -408,7 +417,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, nextExpedition, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -424,7 +433,7 @@ self.onmessage = event => {
     manualUntil: 0, moveOwned: false, previous: null, velocities: new WeakMap(),
     lastMove: 0, lastGameTime: 0, errorCount: 0, zones: new Set(), observedGame: null,
     route: null, bell: null, bellRoute: null, bellStatus: '尚無鐘罩機制',
-    stages: [], laps: [], stageLap: 1, progressionStatus: '從所選地圖開始，已通關則自動推進', flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '', launchLap: 0,
+    stages: [], laps: [], stageLap: 1, progressionStatus: '從所選地圖開始，已通關則自動推進', expeditionProbe: null, farmPlan: null, flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '', launchLap: 0,
     revealNode: null, revealAt: 0, revealClicked: false, lastListRead: 0,
     settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
@@ -624,6 +633,7 @@ self.onmessage = event => {
     stopMove(); state.game = g; state.route = null; state.bell = null; state.bellRoute = null; state.bellStatus = '尚無鐘罩機制'; state.velocities = new WeakMap(); resetPicker();
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
+    state.expeditionProbe = null; state.farmPlan = null;
     state.noFlipDone = false; state.postRun = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -955,6 +965,13 @@ self.onmessage = event => {
     }
     return true;
   }
+  function setExpeditionTarget(id, lap) {
+    if (cfg.expedition === id && cfg.expeditionLap === lap) return;
+    cfg.expedition = id; cfg.expeditionLap = lap;
+    state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; save();
+    ui.querySelector('[data-setting="expedition"]').value = id;
+    ui.querySelector('[data-setting="expeditionLap"]').value = String(lap);
+  }
   function repeatStep(now) {
     if (!cfg.repeat) return false;
     if (cfg.repeatLimit > 0 && state.runsStarted >= cfg.repeatLimit) {
@@ -989,33 +1006,56 @@ self.onmessage = event => {
     if (visible($('#stages'))) {
       const tabs = readLapTabs();
       const currentLap = tabs.find(t => t.selected)?.lap || 1;
-      if (currentLap !== cfg.expeditionLap) {
-        const target = tabs.find(t => t.lap === cfg.expeditionLap);
-        if (!target || target.locked) { log(`第 ${cfg.expeditionLap} 周目尚未解鎖，等待手動處理`); return true; }
-        return flowClick(target.tab, `lap:${cfg.expeditionLap}`, now);
+      const planned = state.farmPlan || state.expeditionProbe, wantedLap = planned?.lap || cfg.expeditionLap;
+      if (currentLap !== wantedLap) {
+        const target = tabs.find(t => t.lap === wantedLap);
+        if (!target || target.locked) { log(`第 ${wantedLap} 周目尚未解鎖，等待手動處理`); return true; }
+        return flowClick(target.tab, `lap:${wantedLap}`, now);
       }
       const cards = readStages();
-      const decision = nextExpedition(state.stages, cfg, state.laps);
-      if (decision.type === 'wait' || decision.type === 'complete') { state.progressionStatus = decision.reason; log(decision.reason); return true; }
-      if (decision.type === 'lap' || decision.stage.id !== cfg.expedition) {
-        cfg.expedition = decision.stage.id;
-        if (decision.type === 'lap') cfg.expeditionLap = decision.lap;
-        state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; save();
-        ui.querySelector('[data-setting="expedition"]').value = cfg.expedition;
-        ui.querySelector('[data-setting="expeditionLap"]').value = String(cfg.expeditionLap);
-        state.progressionStatus = `開荒推進：第 ${cfg.expeditionLap} 周目 · ${decision.stage.name}`;
-        log(state.progressionStatus);
-        if (decision.type === 'lap') return flowClick(tabs.find(t => t.lap === decision.lap).tab, `lap:${decision.lap}`, now);
+      const farming = !!state.farmPlan;
+      let stage = planned && state.stages.find(s => s.id === planned.stage);
+      if (!planned) {
+        const decision = nextExpedition(state.stages, cfg, state.laps);
+        if (decision.type === 'wait' || decision.type === 'complete') { state.progressionStatus = decision.reason; log(decision.reason); return true; }
+        stage = decision.stage;
+        if (decision.type === 'lap' || stage.id !== cfg.expedition) {
+          const previous = state.game?.difficulty?.lap === currentLap ? state.game.stageId : cfg.expedition;
+          const source = chooseFarmStage(state.stages, decision.type === 'lap' ? null : stage.id, previous);
+          state.expeditionProbe = { stage: stage.id, lap: decision.lap || currentLap, source: source ? { stage: source.id, lap: currentLap, name: source.name } : null };
+          if (decision.type === 'lap') return flowClick(tabs.find(t => t.lap === decision.lap).tab, `lap:${decision.lap}`, now);
+        }
       }
-      const stage = decision.stage;
       const card = stage && cards.find(c => Number(c.dataset.i) === stage.index);
       if (!card) { log('找不到設定的副本；請重新讀取副本清單'); return true; }
-      if (stage.locked) { state.progressionStatus = `等待解鎖：${stage.name}`; log(`副本未開放：${stage.name}；請檢查前置通關、裝備評分、職業或劇情要求`); return true; }
+      if (farming && (!stage.cleared || stage.locked || stage.storyOnly)) { log(`回刷副本目前無法出發：${stage.name}；等待手動處理`); return true; }
+      if (!farming && state.expeditionProbe && stage.cleared) {
+        setExpeditionTarget(stage.id, currentLap); state.expeditionProbe = null; state.flow = null; return true;
+      }
+      // 鎖定的牌也可選取；只有原生詳情能分辨評分不足或其他解鎖條件。
       if (!card.classList.contains('sel')) return flowClick(card, `stage:${cfg.expedition}`, now);
       const go = $('#stg-go');
-      if (!visible(go) || go.disabled) { state.progressionStatus = `等待出發條件：${stage.name}`; log(`無法出發：${stage.name}；請檢查裝備評分、職業或劇情要求`); return true; }
+      if (stage.locked || !visible(go) || go.disabled) {
+        const failed = [...document.querySelectorAll('#stg-detail .stg-req.no')].map(el => el.textContent.trim());
+        if (cfg.progression && !farming && gearOnlyBlocked(failed)) {
+          const probe = state.expeditionProbe, previous = state.game?.difficulty?.lap === currentLap ? state.game.stageId : probe?.source?.stage || cfg.expedition;
+          const local = chooseFarmStage(state.stages, stage.id, previous);
+          const source = local ? { stage: local.id, lap: currentLap, name: local.name } : probe?.source && probe.source.lap !== currentLap ? probe.source : null;
+          if (source && (source.lap === currentLap || tabs.some(t => t.lap === source.lap && !t.locked))) {
+            state.farmPlan = { ...source, target: stage.id, targetLap: currentLap, targetName: stage.name };
+            state.expeditionProbe = null; setExpeditionTarget(source.stage, source.lap); state.flow = null;
+            state.progressionStatus = `${stage.name}裝備分數不足，回刷第 ${source.lap} 周目 ${source.name}；每局結算後重新檢查`;
+            log(state.progressionStatus); return true;
+          }
+        }
+        state.progressionStatus = `等待出發條件：${stage.name}`;
+        log(`無法出發：${stage.name}；${failed.join('；') || '請檢查裝備評分、職業或劇情要求'}${cfg.progression && gearOnlyBlocked(failed) ? '；沒有可確認已通關且可出發的回刷副本' : ''}`);
+        return true;
+      }
+      setExpeditionTarget(stage.id, currentLap); state.expeditionProbe = null;
       state.launchStage = cfg.expedition; state.launchLap = cfg.expeditionLap;
-      if (cfg.progression) state.progressionStatus = `正在開荒：第 ${cfg.expeditionLap} 周目 · ${stage.name}；未通關則重試本圖`;
+      if (cfg.progression) state.progressionStatus = farming ? `裝備分數不足，回刷第 ${currentLap} 周目 ${stage.name}；結算後再檢查${state.farmPlan.targetName}`
+        : `正在開荒：第 ${cfg.expeditionLap} 周目 · ${stage.name}；未通關則重試本圖`;
       if (flowClick(go, `depart:${cfg.expedition}`, now)) log(`自動遠征：${stage.name}，沿用遊戲目前的難度設定`);
       return true;
     }
@@ -1265,7 +1305,7 @@ self.onmessage = event => {
       <label>遠征周目<select data-setting="expeditionLap">${LAP_LABELS.map((name, i) => `<option value="${i + 1}">${name}${LAP_SUFFIXES[i]}</option>`).join('')}</select></label>
       <label>固定副本／開荒起點<select data-setting="expedition"></select></label><button id="read-stages">讀取遊戲副本清單</button>
       <div class="row"><label>自動開局上限（0＝不限）<input data-setting="repeatLimit" type="number" min="0" max="9999"></label><label>局間等待毫秒<input data-setting="repeatDelay" type="number" min="1500" max="60000"></label></div>
-      <p id="repeat-status" class="hint"></p><small>開荒需同時勾選自動遠征：從所選地圖開始，按原生已通關標記推進，失敗重試；包含聖誕節、元宵節，後續周目跳過劇情關。當所選地圖及其後續地圖通關後，切換已解鎖的下一周目，六周目完成後等待。關閉開荒則固定重刷所選副本。沿用目前難度，先完成勾選的結算裝備整理；未解鎖或評分不足時等待手動處理。</small>
+      <p id="repeat-status" class="hint"></p><small>開荒需同時勾選自動遠征：從所選地圖開始，按原生已通關標記推進，失敗重試；包含聖誕節、元宵節，後續周目跳過劇情關。下一圖僅裝備分數不足時回刷當前已通關副本，每局結算後重查，達標即推進；跨周目也適用。沿用已勾選的結算穿裝／出售與開局上限；其他解鎖條件不足時等待。六周目完成後等待，關閉開荒則固定重刷。</small>
       </details>
       <details><summary>結算後裝備整理</summary>
       <label><input data-setting="autoEquip" type="checkbox"> 打完副本後自動一鍵穿更優裝備</label>
@@ -1314,7 +1354,7 @@ self.onmessage = event => {
         const key = el.dataset.setting, wasRepeat = cfg.repeat;
         cfg = validateConfig({ ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value }); stopMove(); releaseTownKeys();
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
-        if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
+        if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.expeditionProbe = null; state.farmPlan = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
       }
       if (el.hasAttribute('data-sell-quality')) {
         const q = Number(el.dataset.sellQuality);
@@ -1341,11 +1381,11 @@ self.onmessage = event => {
       if (visible(prompt) && /隊長|captain|capitán/i.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
       else log('請先到遠征隊長附近，或手動打開遠征清單後再讀取');
     };
-    ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
+    ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.expeditionProbe = null; state.farmPlan = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
-        expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap },
+        expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap, probe: state.expeditionProbe, farming: state.farmPlan },
         bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
           ...(state.bell ? { x: state.bell.x, y: state.bell.y, radius: state.bell.radius, sealed: state.bell.sealed, struck: state.bell.struck, charge: state.bell.charge } : {}) },
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
@@ -1353,7 +1393,7 @@ self.onmessage = event => {
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);

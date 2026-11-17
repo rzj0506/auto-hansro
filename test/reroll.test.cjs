@@ -228,7 +228,7 @@ test('new settings validate, dangerous options default off and quality IDs remai
   assert.equal(cfg({ noFlipMinutes: -1 }).noFlipMinutes, 0);
   assert.equal(cfg({ noFlipMinutes: 999 }).noFlipMinutes, 180);
   assert.equal(cfg({ expeditionLap: 3 }).expeditionLap, 3);
-  assert.equal(cfg({ expeditionLap: 4 }).expeditionLap, 1);
+  assert.equal(cfg({ expeditionLap: 4 }).expeditionLap, 4);
 });
 
 const native = require('./fixtures/native-ui.json');
@@ -686,5 +686,193 @@ test('hidden Worker pulses drive native bell countdown and shelter movement with
     assert.equal(updates, 91); assert(s.distance() <= 128); assert.equal(s.g.damage, 0); assert.equal(s.bell.waveAge, 0);
     f.ui.querySelector('#toggle').click(); assert.equal(s.g.movePath, null);
     assert(worker.messages.includes('stop')); assert.equal(s.g.app.ticker.started, true);
+  } finally { f.close(); }
+});
+
+// Current native unlock rules and tab handlers, with a simulated character and
+// gear score provider. No game progress or account data is changed outside tests.
+function expeditionScenario(f, { futureLap = false } = {}) {
+  townMarkup(f);
+  const fixture = require('./fixtures/native-stages.json'), d = f.w.document;
+  const saved = JSON.parse(f.w.localStorage.getItem(STORAGE));
+  const config = JSON.parse(JSON.stringify(fixture.config));
+  if (futureLap) { config.max = 7; config.label.push('七周目'); config.suffix.push('・改⁶'); }
+  const char = { gs: 20000, jobLevel: 99, mvpsDefeated: [], stagesCleared: [], roLap: {} };
+  const initialLap = saved.expeditionLap || 1, initialStage = fixture.stages.findIndex(s => s.id === saved.expedition);
+  function clear(id, lap) {
+    const stage = fixture.stages.find(s => s.id === id);
+    if (!char.mvpsDefeated.includes(stage.mvp.id)) char.mvpsDefeated.push(stage.mvp.id);
+    if (lap > 1) char.roLap[id] = Math.max(char.roLap[id] || 0, lap);
+    if (stage.storyOnly) char.stagesCleared.push(id);
+  }
+  if (initialLap > 1) for (const s of fixture.stages) clear(s.id, initialLap - 1);
+  for (let i = 0; i < initialStage; i++) clear(fixture.stages[i].id, initialLap);
+  f.w.__stageFixture = fixture;
+  f.w.eval(`(() => {
+    const xe=window.__stageFixture.stages, wr=a=>a.gs, aliases=window.__stageFixture.mvpAliases;
+    const Zd=(a,e)=>a.includes(e)||(aliases[e]||[]).some(t=>a.includes(t));
+    ${fixture.previousStage}
+    ${fixture.baseUnlock}
+    window.__baseUnlock=eh;
+    window.__makeNativeLaps=${fixture.lapClient};
+  })()`);
+  const G = { stages: () => fixture.stages, st: id => fixture.stages.some(s => s.id === id && s.map && !s.storyOnly),
+    zd: (a, id) => a.includes(id) || (fixture.mvpAliases[id] || []).some(v => a.includes(v)),
+    gs: c => c.gs, k: id => ({ gs: 1000 * (fixture.stages.findIndex(s => s.id === id) + 1) }), eh0: f.w.__baseUnlock };
+  const native = f.w.__makeNativeLaps(G, config);
+  let selected = Math.max(0, initialStage), current = f.game;
+  const launches = [], actions = [];
+  const stages = d.querySelector('#stages'), dialog = d.querySelector('#npc-dialog'), gameover = d.querySelector('#gameover');
+  function eligibility(i) { return native.tab() > 1 ? native.eh(char, i, char.gs) : f.w.__baseUnlock(char, i, char.gs); }
+  function render() {
+    native.tabs(char, render, i => { selected = i; });
+    d.querySelector('#stg-list').innerHTML = fixture.stages.map((s, i) => {
+      const v = eligibility(i), cls = v.unlocked ? v.cleared ? 'cleared' : 'open' : 'locked';
+      return `<button class="stg-card ${cls}${selected === i ? ' sel' : ''}" data-i="${i}"><span class="stg-card-info"><b>${C.STAGES[i][1]}${config.suffix[native.tab()-1]}${s.special ? '<span class="ro-fs-badge">特殊關卡</span>' : ''}</b></span><span class="stg-state">${v.lapSkip ? '劇情關' : cls}</span></button>`;
+    }).join('');
+    for (const card of d.querySelectorAll('.stg-card')) card.onclick = () => { selected = +card.dataset.i; actions.push('select:' + fixture.stages[selected].id); render(); };
+    const v = eligibility(selected);
+    d.querySelector('#stg-go').disabled = !v.unlocked || native.tab() === 1 && (!v.storyOk || v.closed);
+  }
+  d.querySelector('#lobby-prompt').onclick = () => { stages.classList.remove('hidden'); render(); };
+  d.querySelector('#btn-restart').onclick = () => {
+    actions.push('return'); gameover.classList.add('hidden'); d.querySelector('#lobby-ui').classList.remove('hidden'); render();
+  };
+  d.querySelector('#stg-go').onclick = () => {
+    actions.push('go'); stages.classList.add('hidden'); dialog.classList.remove('hidden');
+    d.querySelector('#npc-name').textContent = '難度'; d.querySelector('#npc-text').innerHTML = '<div class="diff"></div>';
+    d.querySelector('#npc-options').innerHTML = '<button class="primary">前往野外</button>';
+    d.querySelector('#npc-options button').onclick = () => {
+      d.querySelector('#npc-name').textContent = '高難度提醒'; d.querySelector('#npc-text').textContent = '高周目';
+      d.querySelector('#npc-options').innerHTML = '<button>取消</button><button class="primary">入場</button>';
+      d.querySelector('#npc-options .primary').onclick = () => {
+        const run = { stage: fixture.stages[selected].id, lap: native.tab() }; launches.push(run); actions.push('launch:' + run.stage);
+        dialog.classList.add('hidden'); d.querySelector('#lobby-ui').classList.add('hidden');
+        current = { ...f.game, player: { x: 500, y: 500, dead: false }, stageId: run.stage, difficulty: { lap: run.lap }, state: 'playing' };
+        f.hooks.start[0](current);
+      };
+    };
+  };
+  function finish(win) {
+    if (win) clear(current.stageId, current.difficulty.lap);
+    current.state = 'over'; current.player.dead = !win; gameover.classList.remove('hidden'); render();
+  }
+  function until(test, limit = 40) { for (let i = 0; i < limit && !test(); i++) f.advance(900); assert(test(), 'expedition state did not reach expected condition'); }
+  render(); stages.classList.remove('hidden');
+  return { char, native, launches, actions, render, finish, until, clear, get current() { return current; } };
+}
+
+test('native six-lap UI reads all new maps, badges and suffixes and persists progression config', async () => {
+  const f = await browserFixture({ repeat: false, progression: true, expeditionLap: 6, expedition: 'xmas' }); let saved;
+  try {
+    const s = expeditionScenario(f);
+    f.w.document.querySelector('[data-laptab="6"]').click(); f.advance(1100);
+    assert.equal(f.ui.querySelector('[data-setting="expeditionLap"]').options.length, 6);
+    assert.equal(f.ui.querySelector('[data-setting="expedition"]').options.length, 12);
+    f.ui.querySelector('#diagnose').click(); const report = JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(report.expedition.stageLap, 6);
+    assert.equal(report.expedition.stages.find(s => s.id === 'xmas').name, '聖誕節');
+    assert.equal(report.expedition.stages.find(s => s.id === 'louyang').name, '元宵節');
+    assert.equal(report.expedition.stages.find(s => s.id === 'prt_castle').storyOnly, true);
+    assert.equal(s.launches.length, 0, 'master repeat remains required');
+    f.ui.querySelector('#export').click(); saved = JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(saved.progression, true); assert.equal(saved.expeditionLap, 6); assert.equal(saved.expedition, 'xmas');
+  } finally { f.close(); }
+  const reload = await browserFixture(saved);
+  try { assert.equal(reload.ui.querySelector('[data-setting="progression"]').checked, true); assert.equal(reload.ui.querySelector('[data-setting="expeditionLap"]').value, '6'); }
+  finally { reload.close(); }
+});
+
+test('native fourth-lap campaign retries defeat and advances after clear while skipping castle story', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1);
+    s.finish(false); s.until(() => s.launches.length === 2);
+    assert.deepEqual(s.launches, [{ stage: 'payon_cave', lap: 4 }, { stage: 'payon_cave', lap: 4 }]);
+    s.finish(true); s.until(() => s.launches.length === 3);
+    assert.deepEqual(s.launches[2], { stage: 'orcs', lap: 4 });
+    const saved = JSON.parse(f.w.localStorage.getItem(STORAGE)); assert.equal(saved.expedition, 'orcs'); assert.equal(saved.expeditionLap, 4);
+    assert.match(f.ui.querySelector('#repeat-status').textContent, /首通開荒/);
+  } finally { f.close(); }
+});
+
+test('native special-stage sequence finishes both new maps before entering fifth lap', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'maze' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1);
+    for (let i = 2; i <= 4; i++) { s.finish(true); s.until(() => s.launches.length === i); }
+    assert.deepEqual(s.launches, [{ stage: 'maze', lap: 4 }, { stage: 'xmas', lap: 4 }, { stage: 'louyang', lap: 4 }, { stage: 'prontera', lap: 5 }]);
+    assert.equal(f.ui.querySelector('[data-setting="expeditionLap"]').value, '5');
+  } finally { f.close(); }
+});
+
+test('sixth lap completion does not relaunch the last map or select nonexistent seventh lap', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 6, expedition: 'louyang' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.finish(true);
+    for (let i = 0; i < 30; i++) f.advance(900);
+    assert.equal(s.launches.length, 1); assert.equal(f.ui.querySelector('[data-setting="expeditionLap"]').value, '6');
+    assert.match(f.ui.querySelector('#repeat-status').textContent, /目前最後周目/);
+  } finally { f.close(); }
+});
+
+test('fixed farming remains on the same native cleared map with campaign mode off', async () => {
+  const f = await browserFixture({ repeat: true, progression: false, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.finish(true); s.until(() => s.launches.length === 2);
+    assert.deepEqual(s.launches, [{ stage: 'payon_cave', lap: 4 }, { stage: 'payon_cave', lap: 4 }]);
+  } finally { f.close(); }
+});
+
+test('native gear lock blocks next campaign map and resumes when eligibility is restored', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.char.gs = 7000; s.finish(true);
+    for (let i = 0; i < 25; i++) f.advance(900);
+    assert.equal(s.launches.length, 1); assert.equal(f.ui.querySelector('[data-setting="expedition"]').value, 'orcs');
+    assert.match(f.ui.querySelector('#status').textContent, /裝備評分/);
+    s.char.gs = 20000; s.render(); s.until(() => s.launches.length === 2); assert.equal(s.launches[1].stage, 'orcs');
+  } finally { f.close(); }
+});
+
+test('campaign completes enabled equipment work before departing for next native map', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, autoEquip: true, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f), d = f.w.document;
+    d.querySelector('#lobby-char').onclick = () => d.querySelector('#charpanel').classList.remove('hidden');
+    d.querySelector('#cp-back').onclick = () => d.querySelector('#charpanel').classList.add('hidden');
+    d.querySelector('#cp-tab-equip').insertAdjacentHTML('beforeend', '<button id="cp-auto-btn">一鍵穿裝</button>');
+    d.querySelector('#cp-auto-btn').onclick = () => s.actions.push('equip');
+    s.until(() => s.launches.length === 1); s.finish(true); s.until(() => s.launches.length === 2, 60);
+    assert(s.actions.indexOf('equip') < s.actions.indexOf('launch:orcs')); assert(s.actions.includes('equip'));
+  } finally { f.close(); }
+});
+
+test('campaign respects shared launch limit across lap boundaries', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, repeatLimit: 1, expeditionLap: 4, expedition: 'louyang' });
+  try {
+    const s = expeditionScenario(f); s.until(() => s.launches.length === 1); s.finish(true);
+    for (let i = 0; i < 25; i++) f.advance(900);
+    assert.equal(s.launches.length, 1); assert.match(f.ui.querySelector('#status').textContent, /1 次上限/);
+  } finally { f.close(); }
+});
+
+test('changing lap during a pending high-difficulty prompt prevents stale confirmation', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 4, expedition: 'payon_cave' });
+  try {
+    const s = expeditionScenario(f); s.until(() => f.w.document.querySelector('#npc-name').textContent === '高難度提醒');
+    f.setting('expeditionLap', 5);
+    for (let i = 0; i < 5; i++) f.advance(900);
+    assert.equal(s.launches.length, 0);
+  } finally { f.close(); }
+});
+
+test('future native lap tab is discovered without truncating the selection to six', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 6, expedition: 'louyang' });
+  try {
+    const s = expeditionScenario(f, { futureLap: true }); s.until(() => s.launches.length === 1);
+    s.finish(true); s.until(() => s.launches.length === 2);
+    assert.deepEqual(s.launches[1], { stage: 'prontera', lap: 7 });
+    assert.equal(f.ui.querySelector('[data-setting="expeditionLap"]').value, '7');
   } finally { f.close(); }
 });

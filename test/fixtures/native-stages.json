@@ -1,0 +1,229 @@
+{
+  "retrieved": "2026-11-17",
+  "source": "https://ro.hans-webgametw.com/build/main-BNOcv2PN.hz70eb4bc4.js",
+  "bundleSha256": "04c76e491b5233343a86c3cb6253720265c4be55861060d0026024b79e883162",
+  "config": {
+    "stages": null,
+    "max": 6,
+    "curve": {
+      "hp": 181.01933598375618,
+      "dmg": 22.91765149399039,
+      "gs": 4.976041599504569
+    },
+    "suffix": [
+      "",
+      "・改",
+      "・改²",
+      "・改³",
+      "・改⁴",
+      "・改⁵"
+    ],
+    "label": [
+      "一周目",
+      "二周目",
+      "三周目",
+      "四周目",
+      "五周目",
+      "六周目"
+    ],
+    "tierMax": 8,
+    "cardStep": 1000000,
+    "cardMult": [
+      1,
+      1.5,
+      2,
+      2.5,
+      3,
+      3.5
+    ],
+    "cardNoScale": [
+      4144
+    ]
+  },
+  "stages": [
+    {
+      "id": "prontera",
+      "name": "Campos de Prontera",
+      "place": "Al sur de Prontera",
+      "levels": "1–8",
+      "tier": 1,
+      "gsMin": 0,
+      "map": "prt_fild08",
+      "storyOnly": false,
+      "mvp": {
+        "t": 720,
+        "id": "mastering"
+      }
+    },
+    {
+      "id": "sewer",
+      "name": "Alcantarillas de Prontera",
+      "place": "Bajo las calles de Prontera",
+      "levels": "9–12",
+      "tier": 1,
+      "gsMin": 20,
+      "map": "prt_sewer",
+      "storyOnly": false,
+      "mvp": {
+        "t": 480,
+        "id": "golden_thief_bug"
+      }
+    },
+    {
+      "id": "sunken",
+      "name": "Barco hundido",
+      "place": "Costa de Alberta",
+      "levels": "13–15",
+      "tier": 1,
+      "gsMin": 40,
+      "story": "sunken_story",
+      "map": "sunken_deck",
+      "storyOnly": false,
+      "mvp": {
+        "t": 600,
+        "id": "drake"
+      }
+    },
+    {
+      "id": "byalan",
+      "name": "Isla de Byalan",
+      "place": "Mazmorra de Izlude",
+      "levels": "16–20",
+      "tier": 2,
+      "gsMin": 110,
+      "map": "byalan",
+      "storyOnly": false,
+      "mvp": {
+        "t": 720,
+        "id": "kraken"
+      }
+    },
+    {
+      "id": "payon",
+      "name": "Bosque de Payon",
+      "place": "Alrededores de Payon",
+      "levels": "21–25",
+      "tier": 2,
+      "gsMin": 135,
+      "map": "pay_fild08",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "eddga"
+      }
+    },
+    {
+      "id": "payon_cave",
+      "name": "Cueva de Payon",
+      "place": "Bajo las montañas de Payon",
+      "levels": "26–30",
+      "tier": 2,
+      "gsMin": 165,
+      "map": "payon_cave",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "moonlight"
+      }
+    },
+    {
+      "id": "prt_castle",
+      "name": "Castillo de Prontera",
+      "place": "Sala del trono",
+      "levels": "31–35",
+      "tier": 2,
+      "gsMin": 185,
+      "jobLvMin": 50,
+      "map": "prt_throne",
+      "storyOnly": true,
+      "mvp": {
+        "t": 90,
+        "id": "high_orc"
+      }
+    },
+    {
+      "id": "orcs",
+      "name": "Aldea orca",
+      "place": "Campos de Geffen",
+      "levels": "31–40",
+      "tier": 3,
+      "gsMin": 400,
+      "map": "gef_fild10",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "orc_hero"
+      }
+    },
+    {
+      "id": "pyramid",
+      "name": "Pirámides de Morroc",
+      "place": "Desierto de Morroc",
+      "levels": "41–50",
+      "tier": 3,
+      "gsMin": 650,
+      "map": "moc_pryd04",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "osiris"
+      }
+    },
+    {
+      "id": "maze",
+      "name": "Bosque laberinto",
+      "place": "Al norte de Prontera",
+      "levels": "51–60",
+      "tier": 3,
+      "gsMin": 900,
+      "map": "prt_maze02",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "baphomet"
+      }
+    },
+    {
+      "id": "xmas",
+      "name": "Navidad",
+      "place": "Lutie",
+      "levels": "61–65",
+      "tier": 3,
+      "special": true,
+      "gsMin": 900,
+      "map": "xmas",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "antonio"
+      }
+    },
+    {
+      "id": "louyang",
+      "name": "Festival de los Faroles",
+      "place": "Louyang",
+      "levels": "61–70",
+      "tier": 3,
+      "special": true,
+      "gsMin": 900,
+      "map": "louyang",
+      "storyOnly": false,
+      "mvp": {
+        "t": 840,
+        "id": "white_lady"
+      }
+    }
+  ],
+  "lapClient": "function lapClient(G, C) {\r\n  const $ = q => document.querySelector(q);\r\n  let TAB = 1;\r\n  const list = () => G.stages().map((s, i) => ({ s, i })).filter(x => G.st(x.s.id));   // 周目分頁裡能打的關卡（照順序；含特殊關卡）\r\n  // 「最後一關」＝最後一個一般關卡（特殊關卡 special 不算：打倒它不開下一個周目分頁，2026-11-17 元宵節）\r\n  const last = () => { const L = list().filter(x => !x.s.special); return L.length ? L[L.length - 1].s : null; };\r\n  function clearedAt(c, s, n) {   // 這一關的第 n 周目 MVP 打倒了沒\r\n    if (!c || !s) return false;\r\n    if (n <= 1) return G.zd(c.mvpsDefeated || [], s.mvp.id);\r\n    return ((c.roLap && c.roLap[s.id]) | 0) >= n;\r\n  }\r\n  const tabOpen = (c, n) => n <= 1 || clearedAt(c, last(), n - 1);   // 第 n 周目分頁：打倒第 n−1 周目最後一關的 MVP\r\n  const maxTab = c => { let n = 1; while (n < C.max && tabOpen(c, n + 1)) n++; return n; };\r\n  const gsNeed = (s, n) => (n > 1 && s ? G.k(s.id, n).gs : (s && s.gsMin) || 0);\r\n  // 周目分頁裡的解鎖判斷（形狀同原本的 eh()）\r\n  function eh(c, i, gs) {\r\n    const s = G.stages()[i], n = TAB, L = list(), k = L.findIndex(x => x.i === i);\r\n    if (!s || k < 0) return { needMvp: null, mvpOk: false, gsOk: false, jobOk: false, unlocked: false, cleared: false, storyOk: true, closed: true, lapSkip: !!s && !!s.storyOnly };   // lapSkip＝劇情關，周目不重打（清單、條件改顯示說明）\r\n    // 前一關（同 95_festival RO_FSPREV）：一般關卡＝前面最近的一般關卡（特殊關卡不擋後面的關）；\r\n    //   特殊關卡＝緊鄰的前一關、同周目（2026-11-17 兩個特殊關卡串起來：聖誕節・改 要迷宮森林・改，元宵節・改 要聖誕節・改）\r\n    const P = s.special ? L.slice(0, k) : L.slice(0, k).filter(x => !x.s.special), prev = P.length ? P[P.length - 1].s : null, mvpOk = prev ? clearedAt(c, prev, n) : tabOpen(c, n);\r\n    const gsOk = gs >= gsNeed(s, n), jobOk = !s.jobLvMin || c.jobLevel >= s.jobLvMin;\r\n    return { needMvp: prev, mvpOk, gsOk, jobOk, unlocked: mvpOk && gsOk && jobOk, cleared: clearedAt(c, s, n), storyOk: true, closed: true };\r\n  }\r\n  // 分頁列（關卡視窗上面）。rerender＝視窗的重畫函式，setSel＝改選到的關卡\r\n  function tabs(c, rerender, setSel) {\r\n    const mx = maxTab(c);\r\n    if (TAB > mx) TAB = mx;\r\n    let bar = document.getElementById('lap-tabs');\r\n    const listEl = document.getElementById('stg-list');\r\n    if (!listEl) return;\r\n    if (!bar) { bar = document.createElement('div'); bar.id = 'lap-tabs'; bar.style.cssText = 'display:flex;gap:6px;margin:0 0 8px;flex-wrap:wrap'; listEl.parentNode.insertBefore(bar, listEl); }\r\n    bar.classList.toggle('hidden', mx < 2);\r\n    bar.innerHTML = C.label.slice(0, mx).map((t, k) => `<button type=\"button\" class=\"ro-btn small${k + 1 === TAB ? ' primary' : ''}\" data-laptab=\"${k + 1}\">${t}</button>`).join('');\r\n    for (const b of bar.querySelectorAll('[data-laptab]')) b.onclick = () => {\r\n      TAB = +b.dataset.laptab;\r\n      // 選到這個分頁裡最後一個開放的關卡\r\n      let gs = 0; try { gs = G.gs(c); } catch {}\r\n      const ok = list().filter(x => (TAB > 1 ? eh(c, x.i, gs) : G.eh0(c, x.i, gs)).unlocked);\r\n      if (ok.length) setSel(ok[ok.length - 1].i);\r\n      tabs(c, rerender, setSel); rerender();\r\n    };\r\n  }\r\n  \nreturn { tab: () => TAB, eh, tabs };\n}",
+  "baseUnlock": "function eh(a,e,t=wr(a)){const s=xe[e],n=a.mvpsDefeated??[],o=RO_FSPREV(e),i=!o||Zd(n,o.mvp.id),r=t>=s.gsMin,l=!s.jobLvMin||a.jobLevel>=s.jobLvMin,d=!s.story||(a.stagesCleared??[]).includes(s.story),h=!!s.storyOnly&&(!!a.promotion||(a.stagesCleared??[]).includes(s.id));return{needMvp:o,mvpOk:i,gsOk:r,jobOk:l,unlocked:i&&r&&l,cleared:Zd(n,s.mvp.id),storyOk:d,closed:h}}",
+  "previousStage": "function RO_FSPREV(e){const s=xe[e];if(s&&s.special)return e>0?xe[e-1]:null;for(let i=e-1;i>=0;i--)if(xe[i]&&!xe[i].special)return xe[i];return null}",
+  "mvpAliases": {
+    "mastering": [
+      "golden_thief_bug"
+    ],
+    "kraken": [
+      "eddga",
+      "moonlight"
+    ]
+  }
+}

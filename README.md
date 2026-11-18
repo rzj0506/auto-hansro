@@ -1,4 +1,4 @@
-ro.hans幸存者助手 1.9.0
+ro.hans幸存者助手 1.10.0
 
 [安裝／更新腳本](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js)
 

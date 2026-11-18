@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.9.0
-// @description  各職業技能與寶箱配置、定時拾取退圖刷卡、原生2倍速、六周目開荒及結算裝備整理。
+// @version      1.10.0
+// @description  遠征死亡郵件提醒、各職業技能與寶箱配置、定時刷卡、原生2倍速、六周目開荒及裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

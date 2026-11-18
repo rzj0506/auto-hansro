@@ -64,29 +64,10 @@ test('sum of skill levels includes basic attack and passives once, excluding uno
   assert.equal(C.totalSkillLevels(native),45);
 });
 
-test('missing, invalid or throwing level data is unknown and cannot trigger level-based no-flip',()=>{
+test('missing, invalid or throwing skill-rank data remains unknown',()=>{
   for(const game of [null,{slots:['firebolt']},{slots:['firebolt'],basicAttack:'atk_staff'},
     {slots:['firebolt'],basicAttack:'atk_staff',skillLevel(){return NaN}},
     {slots:['firebolt'],basicAttack:'atk_staff',skillLevel(){throw Error('not ready')}}]) {
     assert.equal(C.totalSkillLevels(game),null);
-    assert.equal(C.noFlipDue({...game,state:'playing',time:99999},cfg({noFlipLevelEnabled:true,noFlipTotalLevel:1})),false);
   }
-});
-
-test('time and total-level triggers are independent OR conditions with inclusive thresholds',()=>{
-  for(const noFlipEnabled of [false,true]) for(const noFlipLevelEnabled of [false,true])
-    for(const time of [599,600]) for(const total of [99,100]) {
-      const config=cfg({noFlipEnabled,noFlipMinutes:10,noFlipLevelEnabled,noFlipTotalLevel:100});
-      assert.equal(C.noFlipDue({state:'playing',time},config,total),noFlipEnabled&&time>=600||noFlipLevelEnabled&&total>=100);
-    }
-  for(const state of ['paused','over','lobby']) assert.equal(C.noFlipDue({state,time:9999},cfg({noFlipEnabled:true,noFlipLevelEnabled:true}),9999),false);
-  assert.equal(C.noFlipDue({state:'levelup',time:600},cfg({noFlipEnabled:true,noFlipLevelEnabled:true}),null),true);
-});
-
-test('old minute settings migrate unchanged and both new trigger fields survive JSON round trip',()=>{
-  const old=C.validateConfig({noFlipEnabled:true,noFlipMinutes:7.5});
-  assert.equal(old.noFlipEnabled,true);assert.equal(old.noFlipMinutes,7.5);assert.equal(old.noFlipLevelEnabled,false);
-  const both=C.validateConfig(JSON.parse(JSON.stringify({...old,noFlipLevelEnabled:true,noFlipTotalLevel:125})));
-  assert.equal(both.noFlipLevelEnabled,true);assert.equal(both.noFlipTotalLevel,125);
-  assert.equal(cfg({noFlipTotalLevel:0}).noFlipTotalLevel,1);assert.equal(cfg({noFlipTotalLevel:1000000}).noFlipTotalLevel,99999);
 });

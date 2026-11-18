@@ -3,9 +3,9 @@ const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const C=require('../src/ro-survivors-helper.user.js');
 
-test('legacy storage defaults to manual opening and retains OR thresholds and all previous priorities',()=>{
+test('legacy storage defaults to manual opening and drops removed triggers and retains previous priorities',()=>{
  const old=C.validateConfig({noFlipEnabled:true,noFlipMinutes:3,noFlipLevelEnabled:true,noFlipTotalLevel:100,priorities:{deity:'firebolt'},deityBanishAfterPick:true});
- assert.equal(old.storedOpenMode,'manual');assert.equal(old.noFlipMinutes,3);assert.equal(old.noFlipTotalLevel,100);assert.equal(old.priorities.deity,'firebolt');assert.equal(old.deityBanishAfterPick,true);
+ assert.equal(old.storedOpenMode,'manual');assert.equal(old.noFlipMinutes,undefined);assert.equal(old.noFlipTotalLevel,undefined);assert.equal(old.priorities.deity,'firebolt');assert.equal(old.deityBanishAfterPick,true);
  assert.equal(C.validateConfig({storedOpenMode:'unknown'}).storedOpenMode,'manual');
  for(const mode of ['manual','skills','chests','both'])assert.equal(C.validateConfig(JSON.parse(JSON.stringify({...old,storedOpenMode:mode}))).storedOpenMode,mode);
 });
@@ -18,8 +18,8 @@ test('stored opening ranges respect enabled picker types and reached skill-savin
  }
  assert.equal(C.storedKindAllowed('skill',{...cfg,skills:false},'both'),false);
  assert.equal(C.storedKindAllowed('chest',{...cfg,chests:false},'both'),false);
- assert.equal(C.storedKindAllowed('skill',cfg,'both',true),false);
- assert.equal(C.storedKindAllowed('chest',cfg,'both',true),true);
+ assert.equal(C.storedKindAllowed('skill',{...cfg,skillLevelGate:true,skillSaveAtLevel:10},'both',{role:10}),false);
+ assert.equal(C.storedKindAllowed('chest',cfg,'both',{role:10}),true);
 });
 
 test('stored counts include parked cards/chest and the current chest once; opening range is job specific',()=>{

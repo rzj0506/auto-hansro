@@ -1453,3 +1453,131 @@ test('deity options round-trip through actual UI, catalog selection, JSON and in
   }finally{f.close();}
   const r=await browserFixture(saved);try{assert.equal(r.ui.querySelector('[data-setting="deityOverrideEnabled"]').checked,true);assert.equal(r.ui.querySelector('[data-setting="deityBanishTargets"]').value,'firebolt');}finally{r.close();}
 });
+
+function storedScenario(f,{skills=2,chests=2,chestIds=['p_cd'],skillIds=['firebolt'],time=0}={}){
+  const spec=require('./fixtures/native-save.json'),w=f.w,d=w.document,S={g:null};w.RO_SAVEUP=S;
+  d.body.insertAdjacentHTML('beforeend','<div id="pause" class="hidden"><div class="ro-body"></div></div><div id="toasts"></div>');
+  w.eval(`(${spec.saveClient})`)(S,spec.config,()=>{d.querySelector('#picker').classList.add('hidden');d.querySelector('#pk-cards').innerHTML=''});
+  S.setLv(true);S.setCh(true);
+  const counts={skills:[],chests:[],card:0,deck:0,rollSkill:0,rollChest:0,draws:[]},picker=d.querySelector('#picker');
+  const pool=w.eval(`(function(ws){return ${native.chestSlotItems}})`)(f.items);
+  const g={...f.game,player:{...f.game.player},script:{bosses:[{id:'test'}]},time,lootUntil:-1,state:'playing',pendingLevelUps:skills,roChests:chests,
+    roLvSaved:skills,roOpening:false,openingChest:null,openingCost:0,perksLeft:{...f.game.perksLeft,deity:1,banish:3},
+    runItems:{slots:new Map(),slotItems:pool,choose(c){this.slots.set(c.slot,{item:c.item,vals:[c.value||1],quality:0})}},
+    weapons:[{id:'firebolt',rank:1,applyUpgrade(){this.rank++}}],passives:new Map(),passiveRank:new Map(),events:{},
+    recomputeStats(){},healPlayer(){},runItemName(slot,id){return f.items[id]?.name||id},
+    deityLearned:()=>['firebolt'],chestOpts:()=>({swap:true,banished:new Set(),useless:new Set()}),
+    rollChoices(){counts.rollSkill++;return skillIds.map(id=>({id,isNew:id!=='firebolt',rarity:0,upgrade:{rarity:0}}))},
+    rollChest(){counts.rollChest++;const ids=Array.isArray(chestIds[0])?chestIds[Math.min(counts.rollChest-1,chestIds.length-1)]:chestIds;return ids.map(id=>({slot:f.items[id].slot,item:id,quality:0,value:1,refine:0}))},
+    skillLevel(id){return id==='atk_test'?1:this.weapons.find(c=>c.id===id)?.rank||1},basicAttack:'atk_test'};
+  const names={firebolt:'火箭術',napalm:'心靈爆破'};
+  g.choose=w.eval(`(function(RO_SAVEUP,le){const O={play(){}};return ${spec.choose}})`)(S,{firebolt:{kind:'weapon'},napalm:{kind:'weapon'}});
+  g.chooseChest=w.eval(`(function(RO_SAVEUP){const O={play(){}};return ${spec.chooseChest}})`)(S);
+  function draw(kind,cards){
+    S.cur(g,kind==='skill'?'lv':'chest',cards);g.state='levelup';
+    picker.classList.remove('hidden','closing');picker.querySelector('#pk-title').textContent=kind==='skill'?'Level Up!':'寶箱';
+    const box=picker.querySelector('#pk-cards');box.innerHTML='';counts.draws.push({kind,cards});
+    cards.forEach((c,index)=>{
+      const item=kind==='chest'?f.items[c.item]:null,slot=d.createElement('div');slot.className='pk-slot';
+      slot.innerHTML=`<button class="pk-card"><span class="pk-name">${item?.name||names[c.id]}</span><span class="pk-sub">${item?{potion:'藥水',elixir:'秘藥'}[item.slot]:''}</span><span class="pk-badge">普通</span><span class="pk-lines">傷害</span>${c.isNew?'<span class="pk-ribbon">新</span>':''}</button><button class="pk-act" title="重抽單張">重抽<small>9</small></button>`;
+      slot.querySelector('.pk-act').onclick=()=>{counts.card++;g.perksLeft.reroll_card--;cards[index]={...c};draw(kind,cards)};
+      slot.querySelector('.pk-card').onclick=()=>{
+        picker.classList.add('closing');
+        w.setTimeout(()=>{
+          picker.classList.add('hidden');picker.classList.remove('closing');box.innerHTML='';
+          if(kind==='skill'){counts.skills.push(c.id);g.choose(c)}else{counts.chests.push(c.item);g.chooseChest(c)}
+        },820);
+      };
+      box.append(slot);
+    });
+    picker.querySelector('#pk-bar').innerHTML='<button class="pk-act" title="重抽整組">重抽<small>9</small></button>';
+    picker.querySelector('#pk-bar .pk-act').onclick=()=>{counts.deck++;g.perksLeft.reroll--;draw(kind,cards.map(c=>({...c})))};
+  }
+  g.events={onLevelUp:cards=>draw('skill',cards),onChest:cards=>draw('chest',cards),onLoot(){}};
+  f.game=g;S.g=g;f.hooks.start[0](g);S.sync();
+  function step(n=1){for(let i=0;i<n;i++){f.hooks.tick[0](g);f.advance(1100)}}
+  function diagnostic(){f.ui.querySelector('#diagnose').click();return JSON.parse(f.ui.querySelector('#config').value)}
+  return{S,g,counts,step,diagnostic};
+}
+
+test('new native save switches remain independent and the assistant mirrors the actual game controls',async()=>{
+  const f=await browserFixture();try{
+    const s=storedScenario(f);s.step();
+    const skill=f.ui.querySelector('[data-native-save="skill"]');skill.checked=false;skill.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+    assert.equal(s.S.prefLv(),false);assert.equal(s.S.prefCh(),true);assert.equal(f.w.localStorage.getItem('ro-hans.saveLv'),'0');
+    const chest=f.w.document.querySelector('#sv-check-ch');chest.checked=false;chest.dispatchEvent(new f.w.Event('change',{bubbles:true}));s.step();
+    assert.equal(f.ui.querySelector('[data-native-save="chest"]').checked,false);assert.equal(s.S.prefCh(),false);
+    assert.equal(s.counts.rollChest+s.counts.rollSkill,0);
+  }finally{f.close();}
+});
+
+test('default manual mode leaves stored offers intact; explicit chest button starts with chest and preserves the other type',async()=>{
+  const f=await browserFixture({chestReroll:false});try{
+    const s=storedScenario(f,{chests:1});s.step(3);assert.equal(s.counts.rollChest+s.counts.rollSkill,0);
+    f.ui.querySelector('#stored-chest').click();s.step(12);
+    assert.deepEqual(s.counts.chests,['p_cd']);assert.deepEqual(s.counts.skills,[]);assert.equal(s.g.pendingLevelUps,2);assert(s.g.roLvKeep);
+  }finally{f.close();}
+});
+
+for(const mode of ['skills','chests','both'])test(`native saved queue opens permitted types only: ${mode}`,async()=>{
+  const f=await browserFixture({storedOpenMode:mode,chestReroll:false});try{
+    const s=storedScenario(f);s.step(25);
+    assert.equal(s.counts.skills.length,mode==='chests'?0:2);assert.equal(s.counts.chests.length,mode==='skills'?0:2);
+    assert.equal(s.g.pendingLevelUps,mode==='chests'?2:0);
+    assert.equal(C.storedCounts(s.g).chest,mode==='skills'?2:0);
+    assert.equal(s.g.state,'playing');
+  }finally{f.close();}
+});
+
+test('saved opening respects disabled picker types and assistant pause, and excludes invalid/stale native games',async()=>{
+  const f=await browserFixture({storedOpenMode:'both',skills:false,chestReroll:false});try{
+    const s=storedScenario(f);f.ui.querySelector('#toggle').click();s.step(3);assert.equal(s.counts.rollChest+s.counts.rollSkill,0);
+    f.ui.querySelector('#toggle').click();s.step(18);assert.equal(s.counts.skills.length,0);assert.equal(s.counts.chests.length,2);
+    for(const patch of [{state:'paused'},{player:{...s.g.player,dead:true}},{lootUntil:1},{endless:{}},{isStory:true},{coop:{}},{replayMoves:[]}]){
+      const previous={...s.g};Object.assign(s.g,patch,{roChests:2});const before=s.counts.rollChest;s.step(2);assert.equal(s.counts.rollChest,before);Object.assign(s.g,previous);
+    }
+    s.S.g={...s.g};s.g.roChests=2;const before=s.counts.rollChest;s.step(3);assert.equal(s.counts.rollChest,before);
+  }finally{f.close();}
+});
+
+for(const trigger of ['time','level'])test(`legacy ${trigger} threshold saves unselected skills without losing them and still processes chests`,async()=>{
+  const f=await browserFixture({storedOpenMode:'both',chestReroll:false,noFlipEnabled:trigger==='time',noFlipMinutes:3,noFlipLevelEnabled:trigger==='level',noFlipTotalLevel:1});try{
+    const s=storedScenario(f,{time:trigger==='time'?180:0,chests:1});s.S.openNow();const original=s.S.curK;s.step(15);
+    assert.equal(s.S.prefLv(),true);assert.equal(s.g.pendingLevelUps,2);assert.equal(s.g.roLvKeep,original);
+    assert.equal(s.counts.skills.length,0);assert.deepEqual(s.counts.chests,['p_cd']);assert.equal(s.g.roNoFlip,undefined);
+    f.ui.querySelector('#stored-skill').click();s.step(15);assert.equal(s.counts.skills.length,2,'explicit reopening remains possible after threshold');
+  }finally{f.close();}
+});
+
+for(const rerollMode of ['card','deck'])test(`saved chest budget survives ${rerollMode} redraw, parking, rescan and reopen; next null-token chest starts fresh`,async()=>{
+  const f=await browserFixture({storedOpenMode:'chests',rerollMode,maxRerolls:1,exhausted:'wait',priorities:{potion:'p_cd',elixir:'e_dmg'}});try{
+    const s=storedScenario(f,{skills:0,chests:2,chestIds:[['p_hp'],['e_hp']]});s.step(7);
+    assert.equal(s.counts[rerollMode],1);assert.equal(s.g.openingChest,null);assert.equal(s.diagnostic().usedRerolls,1);
+    f.setting('storedOpenMode','manual');f.ui.querySelector('#stored-keep').click();s.step(2);
+    const kept=s.g.roChestKeep;assert(kept);f.ui.querySelector('#rescan').click();s.step();
+    f.ui.querySelector('#stored-chest').click();s.step(5);assert.equal(s.counts[rerollMode],1);assert.equal(s.S.curK,kept);assert.equal(s.diagnostic().usedRerolls,1);
+    f.w.document.querySelector('.pk-card').click();s.step(8);
+    assert.equal(s.counts[rerollMode],2,JSON.stringify({counts:s.counts,state:s.g.state,remaining:s.g.roChests,stored:s.g.roChestKeep,diagnostic:s.diagnostic()}));assert.equal(s.counts.chests.length,1);assert.equal(s.diagnostic().usedRerolls,1);
+  }finally{f.close();}
+});
+
+test('native continue-saving pauses automatic reopening until explicit HUD open, with no saved opportunities discarded',async()=>{
+  const f=await browserFixture({storedOpenMode:'both',chestReroll:false});try{
+    const s=storedScenario(f,{chests:1});s.step();
+    f.w.document.querySelector('#sv-bar [data-t="keep"]').click();s.step(8);
+    assert.equal(s.g.state,'playing');assert.equal(s.counts.skills.length+s.counts.chests.length,0);assert.equal(s.g.pendingLevelUps,2);assert.equal(s.g.roChests,1);
+    assert.equal(s.diagnostic().stored.manualHold,true);
+    f.w.document.querySelector('#sv-open').click();s.step(20);
+    assert.equal(s.counts.skills.length,2);assert.equal(s.counts.chests.length,1);assert.equal(s.diagnostic().stored.manualHold,false);
+  }finally{f.close();}
+});
+
+test('manual native tabs override an automatic batch and preserve independent skill and chest reroll budgets',async()=>{
+  const f=await browserFixture({storedOpenMode:'chests',rerollMode:'card',maxRerolls:1,exhausted:'wait',priorities:{potion:'p_cd'}});try{
+    const s=storedScenario(f,{skills:2,chests:1,chestIds:['p_hp'],skillIds:['napalm']});s.step(6);assert.equal(s.counts.card,1);
+    const original=s.S.curK;f.w.document.querySelector('#sv-bar [data-t="lv"]').click();s.step(6);
+    assert.equal(s.S.curT,'lv');assert.equal(s.counts.deck,1);assert.equal(s.counts.skills.length,0);
+    f.w.document.querySelector('#sv-bar [data-t="chest"]').click();s.step(6);
+    assert.equal(s.S.curK,original);assert.equal(s.counts.card,1);assert.equal(s.diagnostic().usedRerolls,1);
+  }finally{f.close();}
+});

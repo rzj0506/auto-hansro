@@ -64,7 +64,7 @@ test('enabled chest reroll still obeys mode, budgets, reserves, limits and first
 
 // Mount the actual userscript in a DOM and drive its interval and click handlers.
 // Game hooks and picker markup are fixtures; no game/network operations run here.
-async function browserFixture(saved = {}) {
+async function browserFixture(saved = {}, mailSaved = null) {
   const errors = [];
   const console = new VirtualConsole();
   console.on('jsdomError', error => errors.push(error));
@@ -83,6 +83,7 @@ async function browserFixture(saved = {}) {
   w.clearTimeout = id => timers.delete(id);
   Object.defineProperty(w.performance, 'now', { value: () => now });
   w.localStorage.setItem(STORAGE, JSON.stringify({ background: false, dodge: false, pickups: false, ...saved }));
+  if(mailSaved)w.localStorage.setItem('ro-survivors-helper.emailjs.v1',JSON.stringify(mailSaved));
   const hooks = { start: [], tick: [], hurt: [], cast: [], kill: [] };
   const registry = Object.fromEntries([...C.FIXED, 'soul_strike', 'napalm'].map(id => [id, { name: ({ firebolt: '火箭術', coldbolt: '冰箭術', lightning: '雷擊術', soul_strike: '聖靈召喚', napalm: '心靈爆破' })[id] }]));
   const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, p_dmg: { id: 'p_dmg', slot: 'potion', name: '傷害藥水' }, p_area: { id: 'p_area', slot: 'potion', name: '範圍藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' }, e_hp: { id: 'e_hp', slot: 'elixir', name: '生命秘藥' }, b_dmg: { id: 'b_dmg', slot: 'blessing', name: '傷害祝福' } };
@@ -1250,5 +1251,92 @@ test('timer cancels cleanup if game becomes a group run and never substitutes sa
     const s=timedRunScenario(f);s.game.pickups=[{kind:'card',ref:4001,x:1800,y:1800,dead:false}];s.step(.2);s.game.coop={};s.step(25);assert.equal(s.report.saved,0);
     s.game.coop=null;f.setting('cleanupSeconds',0);f.w.document.querySelector('#btn-endrun').onclick=null;s.step(1);
     assert.equal(s.report.saved,0);assert.equal(s.quit,0);assert.match(f.ui.querySelector('#log').textContent,/找不到原生結束結算/);
+  }finally{f.close();}
+});
+
+const mailFixtureSettings={serviceId:'service_fixture',templateId:'template_fixture',publicKey:'public_fixture',toEmail:'user@example.com'};
+const mailFlush=()=>new Promise(resolve=>setImmediate(resolve));
+function mailTransport(f,handler=()=>Promise.resolve({ok:true,status:200})){
+  const calls=[];f.w.fetch=(url,options)=>{calls.push({url,options,payload:JSON.parse(options.body)});return handler(url,options)};return calls;
+}
+function mailGame(f,patch={}){
+  const d=f.w.document;if(!d.querySelector('#hud'))d.body.insertAdjacentHTML('beforeend','<div id="hud"></div>');
+  const g={...f.game,state:'over',stageId:'payon',difficulty:{lap:2},time:189,level:12,kills:321,player:{x:500,y:500,dead:true},...patch};f.hooks.tick[0](g);return g;
+}
+test('mail setup saves locally and stays out of export and diagnostics',async()=>{
+  const f=await browserFixture({deathMailEnabled:true});let saved,stored;try{
+    for(const [key,value]of Object.entries(mailFixtureSettings))f.ui.querySelector(`[data-mail="${key}"]`).value=value;
+    f.ui.querySelector('#mail-save').click();stored=JSON.parse(f.w.localStorage.getItem('ro-survivors-helper.emailjs.v1'));assert.deepEqual(stored,mailFixtureSettings);
+    f.ui.querySelector('#export').click();saved=JSON.parse(f.ui.querySelector('#config').value);
+    for(const value of Object.values(mailFixtureSettings))assert(!JSON.stringify(saved).includes(value));
+    f.ui.querySelector('#diagnose').click();const report=JSON.parse(f.ui.querySelector('#config').value);assert.equal(report.email.configured,true);
+    for(const value of Object.values(mailFixtureSettings))assert(!JSON.stringify(report).includes(value));
+  }finally{f.close();}
+  const r=await browserFixture(saved,stored);try{assert.equal(r.ui.querySelector('[data-mail="toEmail"]').value,mailFixtureSettings.toEmail);assert.equal(r.ui.querySelector('[data-setting="deathMailEnabled"]').checked,true);}finally{r.close();}
+});
+test('death sends once per run even when assistant is paused in background and death page redraws',async()=>{
+  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+    const calls=mailTransport(f);f.ui.querySelector('#toggle').click();Object.defineProperty(f.w.document,'hidden',{configurable:true,value:true});const g=mailGame(f);
+    for(let i=0;i<10;i++){f.hooks.tick[0](g);f.advance(100)}await mailFlush();
+    assert.equal(calls.length,1);assert.equal(calls[0].payload.template_params.survival_time,'03:09');assert.equal(calls[0].options.credentials,'omit');assert.equal(calls[0].options.referrerPolicy,'no-referrer');
+    for(let i=0;i<10;i++)f.advance(1000);await mailFlush();assert.equal(calls.length,1);assert.match(f.ui.querySelector('#mail-status').textContent,/EmailJS 已接受/);
+  }finally{f.close();}
+});
+test('pending death snapshot survives a new run and requests respect rate interval',async()=>{
+  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+    const calls=mailTransport(f);mailGame(f,{stageId:'payon'});mailGame(f,{stageId:'payon_cave',time:400});
+    f.advance(100);await mailFlush();assert.equal(calls.length,1);assert.equal(calls[0].payload.template_params.stage_id,'payon');
+    f.advance(1000);await mailFlush();assert.equal(calls.length,1);
+    f.advance(100);await mailFlush();assert.equal(calls.length,2);assert.equal(calls[1].payload.template_params.stage_id,'payon_cave');
+  }finally{f.close();}
+});
+test('normal victory and native timed settlement never send death mail',async()=>{
+  const f=await browserFixture({deathMailEnabled:true,timedExitEnabled:true,expedition:'payon',cleanupSeconds:0},mailFixtureSettings);try{
+    const calls=mailTransport(f);mailGame(f,{player:{x:500,y:500,dead:false}});f.advance(100);await mailFlush();assert.equal(calls.length,0);
+    const s=timedRunScenario(f);s.game.runCards=[4001];s.step(.3);await mailFlush();assert.equal(s.report.saved,1);assert.equal(calls.length,0);
+  }finally{f.close();}
+});
+test('test mail works with alerts off and a double click cannot duplicate requests',async()=>{
+  const f=await browserFixture({},mailFixtureSettings);try{
+    const calls=mailTransport(f);f.ui.querySelector('#mail-test').click();f.ui.querySelector('#mail-test').click();await mailFlush();assert.equal(calls.length,1);
+    assert.match(calls[0].payload.template_params.title,/測試/);assert.equal(f.ui.querySelector('[data-setting="deathMailEnabled"]').checked,false);
+  }finally{f.close();}
+});
+for(const status of [400,429,500])test(`EmailJS HTTP ${status} never retries same run or stops automation`,async()=>{
+  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+    const calls=mailTransport(f,()=>Promise.resolve({ok:false,status}));mailGame(f);f.advance(100);await mailFlush();
+    for(let i=0;i<5;i++)f.advance(5000);await mailFlush();assert.equal(calls.length,1);assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,true);
+    assert.match(f.ui.querySelector('#mail-status').textContent,new RegExp('HTTP '+status));
+  }finally{f.close();}
+});
+test('mail request timeout is contained, reports uncertain result and does not resend',async()=>{
+  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+    const calls=mailTransport(f,(url,options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted')))));
+    mailGame(f);f.advance(100);assert.equal(calls.length,1);f.advance(15000);await mailFlush();
+    f.advance(30000);await mailFlush();assert.equal(calls.length,1);assert.match(f.ui.querySelector('#mail-status').textContent,/逾時/);
+  }finally{f.close();}
+});
+test('missing setup, stale lobby game and inactive game tab never send mail',async()=>{
+  const f=await browserFixture({deathMailEnabled:true});try{
+    const calls=mailTransport(f);mailGame(f);f.advance(100);await mailFlush();assert.equal(calls.length,0);
+    for(const [key,value]of Object.entries(mailFixtureSettings))f.ui.querySelector(`[data-mail="${key}"]`).value=value;f.ui.querySelector('#mail-save').click();
+    f.w.document.querySelector('#hud').classList.add('hidden');f.advance(2000);await mailFlush();assert.equal(calls.length,0);
+    f.w.document.querySelector('#hud').classList.remove('hidden');f.w.RO_DEAD=true;f.advance(2000);await mailFlush();assert.equal(calls.length,0);
+  }finally{f.close();}
+});
+test('turning alerts off cancels pending deaths and clear removes local service settings',async()=>{
+  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+    const calls=mailTransport(f);mailGame(f);f.setting('deathMailEnabled',false);f.advance(2000);await mailFlush();assert.equal(calls.length,0);
+    f.ui.querySelector('#mail-clear').click();assert.equal(f.w.localStorage.getItem('ro-survivors-helper.emailjs.v1'),null);
+    assert.equal(f.ui.querySelector('[data-setting="deathMailEnabled"]').checked,false);assert.equal(f.ui.querySelector('[data-mail="publicKey"]').value,'');
+  }finally{f.close();}
+});
+
+test('network failure does not expose provider details, retry mail or disable the assistant',async()=>{
+  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+    const calls=mailTransport(f,()=>Promise.reject(new Error('private provider details '+mailFixtureSettings.publicKey)));
+    mailGame(f);f.advance(100);await mailFlush();for(let i=0;i<5;i++)f.advance(5000);await mailFlush();
+    assert.equal(calls.length,1);assert.match(f.ui.querySelector('#mail-status').textContent,/網路錯誤/);assert(!f.ui.querySelector('#log').textContent.includes(mailFixtureSettings.publicKey));
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,true);
   }finally{f.close();}
 });

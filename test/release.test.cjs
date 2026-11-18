@@ -9,7 +9,7 @@ const source = fs.readFileSync(require.resolve('../src/ro-survivors-helper.user.
 
 test('release name, site, version, download URLs and checksum belong to auto-hansro', () => {
   const result = buildRelease(source, 'rzj0506/auto-hansro');
-  assert.equal(result.version, '1.9.0');
+  assert.equal(result.version, '1.10.0');
   assert.equal(result.version, C.VERSION);
   assert.equal(require('../package.json').version, C.VERSION);
   assert.match(result.meta, /@name\s+ro\.hans幸存者助手\n/);
@@ -24,7 +24,7 @@ test('release name, site, version, download URLs and checksum belong to auto-han
 });
 
 test('release builder rejects version mismatches and invalid source/repository/branch', () => {
-  assert.throws(() => buildRelease(source.replace("const VERSION = '1.9.0'", "const VERSION = '1.3.0'"), 'rzj0506/auto-hansro'));
+  assert.throws(() => buildRelease(source.replace("const VERSION = '1.10.0'", "const VERSION = '1.3.0'"), 'rzj0506/auto-hansro'));
   assert.throws(() => buildRelease(source, '../bad/repo'));
   assert.throws(() => buildRelease(source, 'rzj0506/auto-hansro', '../bad'));
   assert.throws(() => buildRelease('not a userscript', 'rzj0506/auto-hansro'));

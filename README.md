@@ -1,10 +1,22 @@
 # ro.hans幸存者助手
 
-基于用户提供的 **v1.3.0** 开发，当前版本 **v1.9.0**，适用于 <https://ro.hans-webgametw.com/>。
+基于用户提供的 **v1.3.0** 开发，当前版本 **v1.10.0**，适用于 <https://ro.hans-webgametw.com/>。
 
 [安装／更新脚本](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js) · [更新元数据](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js)
 
 使用 Tampermonkey 安装后刷新游戏。首次使用保持暂停，按 F9 展开面板，按 F8 启动／暂停。安装改名后的脚本时，请停用原来的“RO 倖存者：三系法術與寶箱助手”，避免两个版本同时运行。
+
+## 单人远征死亡邮件提醒（EmailJS）
+
+新增可勾选的死亡邮件提醒，默认关闭，**独立于助手启动开关**；暂停自动操作后，只要游戏页面还在运行，也能检测并发送提醒。
+
+先按 [EmailJS 配置说明](https://github.com/rzj0506/auto-hansro/blob/main/docs/emailjs-setup.md) 连接自己的发信服务、建立模板，再在面板填写收件邮箱、Service ID、Template ID、Public Key。模板的 To Email 填 `{{to_email}}`，Subject 填 `{{title}}`，正文放 `{{message}}`。点击“保存通知设置”和“发送测试邮件”，确认实际收到后再勾选死亡提醒。可直接复制 [HTML 模板](https://github.com/rzj0506/auto-hansro/blob/main/docs/emailjs-template.html)。无需邮箱密码或 Private Key。
+
+每局单人远征的实际死亡最多一封；正常通关、定时退图不发送，组队、剧情、PVP、爬塔及录像不发送。邮件包含职业、副本、周目、局内存活时间、等级、击杀数与发生时间。自动重开后，上一局已排队的通知仍保留。
+
+发信使用 [EmailJS 官方 REST 接口](https://www.emailjs.com/docs/rest-api/send/)，不添加浏览器扩展权限，不改动游戏时钟。请求串行且至少间隔1.1秒，15秒超时；失败或发送结果不确定时显示原因，不自动重发同一局，也不阻塞其他自动功能。面板显示“EmailJS 已接受”表示接口已接受请求，实际投递需要检查收件箱及服务记录。
+
+通知邮箱和服务参数保存在本浏览器的独立设置中，不进入职业档案、通用配置导出、诊断或 GitHub 文件；换设备需重新填写。“清空通知设置”会删除本机参数并关闭提醒。网页关闭、浏览器冻结和电脑休眠时无法持续检测。此次验证使用模拟邮件接口，未向真实邮箱发送测试邮件；使用前需完成自己的通道测试。
 
 ## 每个职业独立的技能／宝箱配置
 
@@ -164,7 +176,7 @@ pnpm build
 
 源码位于 `src/ro-survivors-helper.user.js`。版本更新时，同时递增 `@version`、`const VERSION` 和 `package.json` 的版本。推送 main 后，GitHub Actions 完成测试并将安装文件、元数据和 SHA-256 清单发布到 `userscript-release` 分支。安装路径固定，后续更新由 Tampermonkey 检查；运行中的游戏需刷新加载新版本。
 
-157 项测试覆盖职业独立档案、旧配置迁移、转职识别、非法系选牌、档案导入／导出、定时拾取与退出、收尾超时、原生卡片入账与清除断点、重复开新局及次数上限，并回归自动2x、评分不足回刷、跨周目、钟罩避难、宝箱重抽和装备整理。`test/fixtures/native-job-run.json` 保留 2026-11-18 客户端的职业定义、拾取、结算及结束按钮代码；其余 `native-*.json` 保留此前倍速、地图、UI、可抽池与钟罩函数。测试游戏循环、渲染、角色、评分接口和账号保存均为模拟，尚未进行真实账号实战验证。
+173 项测试覆盖 EmailJS 设置、隐私导出、死亡去重、自动重开期间排队、后台／暂停提醒、通关及定时结算不误报、接口错误与超时不重发，并回归职业档案、定时刷卡、原生结算、自动2x、评分不足回刷、跨周目、钟罩避难和宝箱策略。`test/fixtures/native-job-run.json` 保留 2026-11-18 客户端的职业定义、拾取、结算及结束按钮代码；其余 `native-*.json` 保留此前相关函数。游戏、邮件接口和账号保存均为模拟，未进行真实账号实战或真实邮件投递验证。
 
 ## 基线记录
 

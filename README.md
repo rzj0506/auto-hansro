@@ -1,10 +1,16 @@
 # ro.hans幸存者助手
 
-基于用户提供的 **v1.3.0** 开发，当前版本 **v1.12.0**，适用于 <https://ro.hans-webgametw.com/>。
+基于用户提供的 **v1.3.0** 开发，当前版本 **v1.12.1**，适用于 <https://ro.hans-webgametw.com/>。
 
 [安装／更新脚本](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js) · [更新元数据](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js)
 
 使用 Tampermonkey 安装后刷新游戏。首次使用保持暂停，按 F9 展开面板，按 F8 启动／暂停。安装改名后的脚本时，请停用原来的“RO 倖存者：三系法術與寶箱助手”，避免两个版本同时运行。
+
+## 宝箱“栏位未识别”修复
+
+v1.12.1 修复了出现“靈藥”牌时停在宝箱界面的问题：旧版仅匹配“秘藥”，与游戏当前类型翻译不同。现在优先使用当前原生牌组的真实类型和物品 ID，牌面数量不匹配或原生数据不可用时，使用物品表和类型别名识别；同时兼容“靈藥／秘藥”及中、英、西、葡类型名称。
+
+旧的名称优先级继续生效，例如旧配置“持續傷害秘藥”仍能匹配当前“持續傷害藥劑”，无需重新填写优先级。未确认的类型仍等待手动处理，日志和诊断会列出具体牌名、类型文字及识别来源。选牌、重抽上限、保存模式和神格规则保持原设置。
 
 ## 新版技能牌／宝箱：分别保存和开启
 

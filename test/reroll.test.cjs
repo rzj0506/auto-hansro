@@ -1454,7 +1454,7 @@ test('deity options round-trip through actual UI, catalog selection, JSON and in
   const r=await browserFixture(saved);try{assert.equal(r.ui.querySelector('[data-setting="deityOverrideEnabled"]').checked,true);assert.equal(r.ui.querySelector('[data-setting="deityBanishTargets"]').value,'firebolt');}finally{r.close();}
 });
 
-function storedScenario(f,{skills=2,chests=2,chestIds=['p_cd'],skillIds=['firebolt'],time=0}={}){
+function storedScenario(f,{skills=2,chests=2,chestIds=['p_cd'],skillIds=['firebolt'],time=0,subNames={potion:'藥水',elixir:'秘藥',blessing:'祝福',dish:'料理',deity:'神格'}}={}){
   const spec=require('./fixtures/native-save.json'),w=f.w,d=w.document,S={g:null};w.RO_SAVEUP=S;
   d.body.insertAdjacentHTML('beforeend','<div id="pause" class="hidden"><div class="ro-body"></div></div><div id="toasts"></div>');
   w.eval(`(${spec.saveClient})`)(S,spec.config,()=>{d.querySelector('#picker').classList.add('hidden');d.querySelector('#pk-cards').innerHTML=''});
@@ -1479,7 +1479,7 @@ function storedScenario(f,{skills=2,chests=2,chestIds=['p_cd'],skillIds=['firebo
     const box=picker.querySelector('#pk-cards');box.innerHTML='';counts.draws.push({kind,cards});
     cards.forEach((c,index)=>{
       const item=kind==='chest'?f.items[c.item]:null,slot=d.createElement('div');slot.className='pk-slot';
-      slot.innerHTML=`<button class="pk-card"><span class="pk-name">${item?.name||names[c.id]}</span><span class="pk-sub">${item?{potion:'藥水',elixir:'秘藥'}[item.slot]:''}</span><span class="pk-badge">普通</span><span class="pk-lines">傷害</span>${c.isNew?'<span class="pk-ribbon">新</span>':''}</button><button class="pk-act" title="重抽單張">重抽<small>9</small></button>`;
+      slot.innerHTML=`<button class="pk-card"><span class="pk-name">${item?.name||names[c.id]}</span><span class="pk-sub">${item?subNames[item.slot]:''}</span><span class="pk-badge">普通</span><span class="pk-lines">傷害</span>${c.isNew?'<span class="pk-ribbon">新</span>':''}</button><button class="pk-act" title="重抽單張">重抽<small>9</small></button>`;
       slot.querySelector('.pk-act').onclick=()=>{counts.card++;g.perksLeft.reroll_card--;cards[index]={...c};draw(kind,cards)};
       slot.querySelector('.pk-card').onclick=()=>{
         picker.classList.add('closing');
@@ -1579,5 +1579,18 @@ test('manual native tabs override an automatic batch and preserve independent sk
     assert.equal(s.S.curT,'lv');assert.equal(s.counts.deck,1);assert.equal(s.counts.skills.length,0);
     f.w.document.querySelector('#sv-bar [data-t="chest"]').click();s.step(6);
     assert.equal(s.S.curK,original);assert.equal(s.counts.card,1);assert.equal(s.diagnostic().usedRerolls,1);
+  }finally{f.close();}
+});
+
+for(const identity of ['native','catalog'])test(`screenshot chest with 靈藥 no longer blocks selection; ${identity} identifies the middle first-tier card`,async()=>{
+  const f=await browserFixture({storedOpenMode:'chests',chestReroll:false,priorities:{elixir:'持續傷害秘藥'}});try{
+    Object.assign(f.items,{e_dot:{id:'e_dot',slot:'elixir',name:'持續傷害藥劑'},g_executioner:{id:'g_executioner',slot:'deity',name:'行刑者之神'},b_double:{id:'b_double',slot:'blessing',name:'雙倍投擲祝福'}});
+    const s=storedScenario(f,{skills:19,chests:1,chestIds:['g_executioner','e_dot','b_double'],subNames:{deity:'神格',elixir:'靈藥',blessing:'祝福'}});
+    s.g.runItems.slots.set('deity',{item:'g_executioner',vals:[1,1]});s.g.runItems.slots.set('blessing',{item:'b_double',vals:[1,1,1]});
+    s.step();
+    if(identity==='catalog')s.S.curK=[{slot:'potion',item:'p_hp'}]; // stale/mismatched native array must not override the visible three cards
+    const report=s.diagnostic();assert.equal(report.cards[1].id,'e_dot');assert.equal(report.cards[1].slot,'elixir');assert.equal(report.cards[1].identitySource,identity);
+    s.step(8);assert.deepEqual(s.counts.chests,['e_dot']);assert.equal(s.g.pendingLevelUps,19);assert.equal(s.counts.skills.length,0);
+    assert(!f.ui.querySelector('#log').textContent.includes('寶箱欄位未識別'));
   }finally{f.close();}
 });

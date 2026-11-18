@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.8.0
-// @description  單人遠征自動2倍速、六周目開荒與評分不足回刷、鐘罩避難、寶箱智能重抽及結算裝備整理。
+// @version      1.9.0
+// @description  各職業技能與寶箱配置、定時拾取退圖刷卡、原生2倍速、六周目開荒及結算裝備整理。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.8.0';
+  const VERSION = '1.9.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -42,16 +42,26 @@
   };
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, pickups: true, background: true, autoDoubleSpeed: false,
-    skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
+    first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
+    profileJob: '', jobProfiles: {},
     chestFillFirst: true, chestSmartReroll: true, noFlipEnabled: false, noFlipMinutes: 10,
     noFlipLevelEnabled: false, noFlipTotalLevel: 100,
     autoEquip: false, autoSell: false, sellQualities: [], expeditionLap: 1,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, progression: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
+    timedExitEnabled: false, timedExitMinutes: 3, cleanupSeconds: 20,
     lootRange: 1800, partyRoll: 'greed',
     rerollMode: 'card-deck', maxRerolls: 6, reserveCard: 0, reserveDeck: 0,
     exhausted: 'best', delay: 1000, safety: 65, chestRange: 2400,
     priorities: { potion: '', elixir: '', blessing: '', dish: '', deity: '' },
+  };
+  const PROFILE_KEYS = ['first', 'second', 'third', 'fourth', 'fifth', 'skillSlots', 'skills', 'rarityFirst', 'skillReroll',
+    'banish', 'banishBasic', 'banishExcludeEnabled', 'banishExclude', 'noFlipEnabled', 'noFlipMinutes', 'noFlipLevelEnabled', 'noFlipTotalLevel',
+    'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'priorities', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
+  const profileSettings = config => Object.fromEntries(PROFILE_KEYS.map(key => [key, JSON.parse(JSON.stringify(config[key]))]));
+  const gameJobId = game => {
+    const id = game?.promotion || game?.look?.promotion || game?.classDef?.id;
+    return typeof id === 'string' && /^[a-z][a-z0-9_]{0,59}$/.test(id) ? id : '';
   };
   const CHAR_MAP = Object.fromEntries('唤喚 术術 击擊 伤傷 传傳 说說 优優 诗詩 回回 药藥 秘秘 复復 却卻 护護 围圍 采採 贪貪 诵誦 咏詠 双雙 掷擲 丰豐 饶饒 智智 烹烹 调調 闪閃 络絡 连連 链鏈 灵靈 圣聖 体體 力力 敏敏 捷捷 运運 龙龍 毁毀 灭滅 寿壽 烈烈 风風 祝祝 觉覺 醒醒 标標 数數 时時 间間 动動 速速 强強 冰冰 箭箭'.split(' ').map(x => [x[0], x[1]]));
   const norm = value => String(value ?? '').normalize('NFKC').toLowerCase()
@@ -105,15 +115,16 @@
     return '';
   }
   function chooseSkill(cards, owned, cfg, registry = {}) {
-    const extras = owned.filter(id => !FIXED.includes(id));
-    const limit = cfg.skillSlots === 5 ? 5 : 4;
+    const fixed = [...new Set(['first', 'second', 'third'].map((key, i) => cfg[key] === undefined ? FIXED[i] : cfg[key]).filter(Boolean).map(v => skillId(v, registry) || v))];
+    const extras = owned.filter(id => !fixed.includes(id));
+    const limit = Math.max(1, Math.min(5, Number(cfg.skillSlots) || 4));
     const configured = [cfg.fourth, ...(limit === 5 ? [cfg.fifth] : [])].filter(Boolean).map(v => skillId(v, registry) || v);
-    const wanted = configured.filter(id => !owned.includes(id) && !FIXED.includes(id));
+    const wanted = configured.filter(id => !owned.includes(id) && !fixed.includes(id));
     const eligible = cards.filter(c => {
       if (owned.includes(c.id)) return true;
       if (owned.length >= limit) return false;
-      if (FIXED.includes(c.id)) return true;
-      if (extras.length >= limit - FIXED.length) return false;
+      if (fixed.includes(c.id)) return true;
+      if (extras.length >= limit - fixed.length) return false;
       return wanted.length ? wanted.includes(c.id) : c.isNew && !!c.id && c.id !== 'potion';
     });
     const ranked = eligible.map(c => {
@@ -122,7 +133,7 @@
     });
     ranked.sort((a, b) => {
       const order = cfg.rarityFirst ? [b.rarity - a.rarity, b.pref - a.pref] : [b.pref - a.pref, b.rarity - a.rarity];
-      return Number(b.targetUpgrade) - Number(a.targetUpgrade) || order.find(Boolean) || Number(FIXED.includes(b.id)) - Number(FIXED.includes(a.id)) || a.index - b.index;
+      return Number(b.targetUpgrade) - Number(a.targetUpgrade) || order.find(Boolean) || Number(fixed.includes(b.id)) - Number(fixed.includes(a.id)) || a.index - b.index;
     });
     return ranked[0] || null;
   }
@@ -296,16 +307,18 @@ self.onmessage = event => {
   const noFlipDue = (game, config, totalLevel = totalSkillLevels(game)) => !!(['playing', 'levelup'].includes(game?.state)
     && (config.noFlipEnabled && Number.isFinite(game?.time) && game.time >= config.noFlipMinutes * 60
       || config.noFlipLevelEnabled && Number.isFinite(totalLevel) && totalLevel >= config.noFlipTotalLevel));
-  function validateConfig(raw) {
+  function validateConfig(raw, includeProfiles = true) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression', 'timedExitEnabled']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     if (Number.isInteger(Number(raw.expeditionLap)) && Number(raw.expeditionLap) >= 1 && Number(raw.expeditionLap) <= 99) out.expeditionLap = Number(raw.expeditionLap);
     if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
     if (Number.isFinite(Number(raw.noFlipTotalLevel))) out.noFlipTotalLevel = clamp(Math.round(Number(raw.noFlipTotalLevel)), 1, 99999);
     if (Array.isArray(raw.sellQualities)) out.sellQualities = [...new Set(raw.sellQualities.filter(q => Number.isInteger(q) && q >= 0 && q <= 4))].sort();
-    if (typeof raw.fourth === 'string') out.fourth = raw.fourth.slice(0, 100).trim();
-    if (typeof raw.fifth === 'string') out.fifth = raw.fifth.slice(0, 100).trim();
+    for (const key of ['first', 'second', 'third', 'fourth', 'fifth']) if (typeof raw[key] === 'string') out[key] = raw[key].slice(0, 100).trim();
+    if (Number.isFinite(Number(raw.timedExitMinutes))) out.timedExitMinutes = clamp(Math.round(Number(raw.timedExitMinutes) * 10) / 10, .1, 180);
+    if (Number.isFinite(Number(raw.cleanupSeconds))) out.cleanupSeconds = clamp(Math.round(Number(raw.cleanupSeconds)), 0, 120);
+    if (out.timedExitEnabled) out.progression = false;
     if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
     if (typeof raw.expedition === 'string') out.expedition = raw.expedition.slice(0, 150);
     if (Array.isArray(raw.banishExclude)) out.banishExclude = [...new Set(raw.banishExclude.filter(v => typeof v === 'string' && /^[\w.-]{1,100}$/.test(v)))].slice(0, 500);
@@ -316,6 +329,13 @@ self.onmessage = event => {
       if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), lo, hi);
     }
     for (const slot of Object.keys(SLOT_NAMES)) if (typeof raw.priorities?.[slot] === 'string') out.priorities[slot] = raw.priorities[slot].slice(0, 5000);
+    if (includeProfiles) {
+      if (typeof raw.profileJob === 'string' && /^[a-z][a-z0-9_]{0,59}$/.test(raw.profileJob)) out.profileJob = raw.profileJob;
+      if (raw.jobProfiles && typeof raw.jobProfiles === 'object' && !Array.isArray(raw.jobProfiles)) for (const [id, profile] of Object.entries(raw.jobProfiles).slice(0, 100)) {
+        if (!/^[a-z][a-z0-9_]{0,59}$/.test(id) || !profile || typeof profile !== 'object' || Array.isArray(profile)) continue;
+        out.jobProfiles[id] = { ...profileSettings(validateConfig(profile, false)), label: typeof profile.label === 'string' ? profile.label.slice(0, 100) : id };
+      }
+    }
     return out;
   }
   function nextExpedition(stages, config, laps = []) {
@@ -337,6 +357,9 @@ self.onmessage = event => {
   function gearOnlyBlocked(failedRequirements) {
     return failedRequirements.length > 0 && failedRequirements.every(t => /gear\s*score|裝備(?:分數|評分)|装备(?:分数|评分)/i.test(t));
   }
+  const timedExitDue = (game, config) => !!(config.timedExitEnabled && !config.progression && game && !game.coop && !game.endless && !game.story && !game.isStory && !game.replayMoves
+    && game.stageId === config.expedition && Number(game.difficulty?.lap || 1) === config.expeditionLap
+    && ['playing', 'levelup', 'reveal'].includes(game.state) && !game.player?.dead && Number.isFinite(game.time) && game.time >= config.timedExitMinutes * 60);
   function chooseFarmStage(stages, targetId, preferredId) {
     const index = targetId === null ? stages.length : stages.findIndex(s => s.id === targetId);
     if (index < 0) return null;
@@ -417,7 +440,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, rankChest, chestFilledSlots, chestTargets, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -440,6 +463,7 @@ self.onmessage = event => {
     panelDrag: null, suppressMiniClickUntil: 0,
     noFlipDone: false, postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false,
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
+    profileJobs: {}, runJob: '', timedExit: null,
   };
   let root, panel, ui, interval, attachTimer;
   const $ = selector => document.querySelector(selector);
@@ -453,7 +477,35 @@ self.onmessage = event => {
     state.logs = state.logs.slice(-50);
   }
   function save() {
+    const id = cfg.profileJob || 'shared';
+    cfg.jobProfiles[id] = { ...profileSettings(cfg), label: state.profileJobs[id]?.name || cfg.jobProfiles[id]?.label || (id === 'shared' ? '舊版共用備份' : id) };
     try { localStorage.setItem(STORAGE, JSON.stringify(cfg)); } catch { log('設定無法儲存；請檢查瀏覽器儲存空間'); }
+  }
+  function renderProfiles() {
+    if (!ui) return;
+    const select = ui.querySelector('#job-profile');
+    const ids = [...new Set(['shared', ...Object.keys(state.profileJobs), ...Object.keys(cfg.jobProfiles)])];
+    select.innerHTML = ids.map(id => `<option value="${esc(id)}">${esc(id === 'shared' ? '舊版共用備份' : state.profileJobs[id]?.name || cfg.jobProfiles[id]?.label || id)}${id === 'shared' ? '' : ` [${esc(id)}]`}</option>`).join('');
+    select.value = cfg.profileJob || 'shared';
+    ui.querySelector('#profile-status').textContent = `正在編輯：${select.selectedOptions[0]?.textContent || cfg.profileJob}。技能、寶箱及相關重抽／放逐／停翻牌設定分職業保存。`;
+  }
+  function switchProfile(id, definition = {}) {
+    save();
+    if (id && !Object.hasOwn(cfg.jobProfiles, id)) {
+      const inherited = definition.base && cfg.jobProfiles[definition.base] || (definition.start === 'firebolt' ? cfg.jobProfiles.shared : null);
+      cfg.jobProfiles[id] = { ...(inherited ? profileSettings(inherited) : { ...profileSettings(DEFAULTS), first: '', second: '', third: '' }), label: definition.name || id };
+    }
+    const profile = cfg.jobProfiles[id || 'shared'];
+    cfg = validateConfig({ ...cfg, ...profileSettings(profile), profileJob: id });
+    save(); resetPicker(); state.noFlipDone = false; populate();
+  }
+  function syncProfile(game) {
+    const id = gameJobId(game); if (!id) return;
+    const known = state.profileJobs[id];
+    const definition = known || { ...game.classDef, id, name: game.jobLabel || (game.classDef?.id === id ? game.classDef.name : id), base: game.classDef?.id !== id ? game.classDef?.id : game.classDef?.base };
+    state.profileJobs[id] = definition;
+    if (cfg.profileJob !== id) { switchProfile(id, definition); log(`已載入職業配置：${definition.name || id} [${id}]`); }
+    else renderProfiles();
   }
   function releaseBackgroundTicker() {
     const ticker = state.clockTicker, restart = state.clockTickerWasRunning;
@@ -533,7 +585,9 @@ self.onmessage = event => {
     state.moveOwned = false; state.previous = null;
   }
   function toggle() {
-    cfg.enabled = !cfg.enabled; save();
+    cfg.enabled = !cfg.enabled;
+    if (cfg.enabled && state.game && state.game.state !== 'over' && (visible($('#hud')) || visible($('#picker')))) syncProfile(state.game);
+    save();
     if (!cfg.enabled) { stopMove(); releaseTownKeys(); }
     syncBackground();
     log(cfg.enabled ? '已啟動' : '已暫停'); renderStatus();
@@ -566,7 +620,7 @@ self.onmessage = event => {
         syncPriorityTiers(slot);
       }
       ui.querySelector('#skills-list').innerHTML = Object.entries(state.registry).filter(([id]) => !id.startsWith('atk_')).map(([id, d]) => `<option value="${esc(`${d.name} [${id}]`)}"></option>`).join('');
-      for (const key of ['fourth', 'fifth']) {
+      for (const key of ['first', 'second', 'third', 'fourth', 'fifth']) {
         const el = ui.querySelector(`[data-setting="${key}"]`), id = skillId(cfg[key], state.registry);
         if (id && el !== ui.activeElement) el.value = `${SKILL_NAMES[id] || state.registry[id]?.name || id} [${id}]`;
       }
@@ -630,12 +684,15 @@ self.onmessage = event => {
   }
   function observeGame(g) {
     if (!g?.player || typeof g.moveTo !== 'function' || !Array.isArray(g.enemies)) return;
+    const job = gameJobId(g);
+    if (job && (state.game !== g || state.runJob !== job)) { state.runJob = job; syncProfile(g); }
     if (state.game === g) return;
     stopMove(); state.game = g; state.route = null; state.bell = null; state.bellRoute = null; state.bellStatus = '尚無鐘罩機制'; state.velocities = new WeakMap(); resetPicker();
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
     state.expeditionProbe = null; state.farmPlan = null;
     resetAutoSpeed();
+    state.timedExit = null;
     state.noFlipDone = false; state.postRun = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -674,6 +731,10 @@ self.onmessage = event => {
       state.registry = registry; state.itemRegistry = items; state.hooks = hooks;
       state.assets = objects.find(v => v.icons instanceof Map && v.itemTextures instanceof Map) || null;
       state.settings = objects.find(v => typeof v.autoPause === 'boolean' && typeof v.muteHidden === 'boolean' && typeof v.lang === 'string') || null;
+      for (const value of Object.values(ns)) if (Array.isArray(value)) for (const job of value) {
+        if (job && typeof job.id === 'string' && typeof job.name === 'string' && typeof job.start === 'string' && typeof job.speed === 'number') state.profileJobs[job.id] = job;
+      }
+      renderProfiles();
       hooks.start.push(observeGame); hooks.tick.push(observeGame);
       syncBackground();
       state.bridge = '模組已連接，等待進入本局'; clearInterval(attachTimer); refreshCatalog();
@@ -837,8 +898,8 @@ self.onmessage = event => {
     }
     return zones;
   }
-  function collectReveal(now) {
-    if (!cfg.pickups) return false;
+  function collectReveal(now, force = false) {
+    if (!cfg.pickups && !force) return false;
     const reveal = $('#drop-reveal');
     if (!visible(reveal)) { state.revealNode = null; state.revealClicked = false; return false; }
     stopMove();
@@ -1068,10 +1129,10 @@ self.onmessage = event => {
     }
     return false;
   }
-  function movement(now, shelter = null) {
+  function movement(now, shelter = null, cleanup = null) {
     const g = state.game;
     if (!g || !visible($('#hud')) || g.state !== 'playing' || g.player.dead || now < state.manualUntil || (document.hidden && !cfg.background) || (!document.hidden && editingSettings()) || g.replayMoves) { stopMove(); return; }
-    if (!cfg.dodge && !cfg.chests && !cfg.pickups) { stopMove(); return; }
+    if (!cfg.dodge && !cfg.chests && !cfg.pickups && !cleanup) { stopMove(); return; }
     if (now - state.lastMove < 110 || g.time === state.lastGameTime) return;
     state.lastMove = now; state.lastGameTime = g.time;
     const p = g.player;
@@ -1097,7 +1158,12 @@ self.onmessage = event => {
       if (state.bellRoute.unreachable) { stopMove(); return; }
       goal = state.bellRoute.points[0];
     }
-    const targets = shelter ? [] : pickupTargets(g.pickups, p, g.zeny, g.chestCost(), cfg, enemies.slice(0, 100));
+    let drops = g.pickups;
+    if (cleanup) {
+      drops = g.pickups.filter(item => cleanup.has(item) && !item.dead);
+      const cards = drops.filter(item => item.kind === 'card'); if (cards.length) drops = cards;
+    }
+    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), cleanup ? { ...cfg, pickups: true, chests: false } : cfg, enemies.slice(0, 100));
     // 遊戲拾取判定使用玩家 y-20，所有掉落物目標需加回 20。
     for (const target of targets.slice(0, 5)) {
       const destination = { x: target.x, y: target.y };
@@ -1158,6 +1224,35 @@ self.onmessage = event => {
   function resetAutoSpeed() {
     state.speedDone = false; state.speedApplied = false; state.speedAttempted = false; state.speedAttemptAt = 0; state.speedStatus = '等待進入單人遠征';
   }
+  function timedExitStep(now) {
+    const g = state.game;
+    if (!cfg.timedExitEnabled || !g || g.state === 'over' || g.player.dead || !visible($('#hud'))) return false;
+    if (g.coop || g.endless || g.story || g.isStory || g.replayMoves || window.__RO_SPD?.state?.().shown === false) { state.timedExit = null; return false; }
+    if (!state.timedExit && timedExitDue(g, cfg)) {
+      state.timedExit = { stage: 'collect', at: g.time, items: new Set(g.pickups.filter(p => !p.dead && /^(card|loot|egg)$/.test(p.kind))), clicked: false };
+      state.route = null; stopMove();
+      log(`已達局內 ${cfg.timedExitMinutes} 分鐘，開始收尾拾取卡片／裝備，最多 ${cfg.cleanupSeconds} 局內秒`);
+    }
+    const plan = state.timedExit; if (!plan) return false;
+    if (plan.stage === 'ending') { if (now - plan.sent > 5000) log('原生結算尚未完成，等待手動確認；不重複結算'); return true; }
+    for (const item of g.pickups) if (!item.dead && item.kind === 'card') plan.items.add(item);
+    if (collectReveal(now, true)) return true;
+    if (visible($('#picker'))) return false;
+    if (g.state !== 'playing') return true;
+    const pending = [...plan.items].filter(item => !item.dead && g.pickups.includes(item));
+    if (pending.length && g.time - plan.at < cfg.cleanupSeconds) {
+      if (bellStep(now)) return true;
+      movement(now, null, plan.items); return true;
+    }
+    stopMove();
+    const end = $('#btn-endrun');
+    if (!end || end.tagName !== 'BUTTON' || end.disabled || typeof end.onclick !== 'function') { log('找不到原生結束結算按鈕，請手動處理'); return true; }
+    // 「退出」會保存斷點；原生結束按鈕才會結算 runCards/runLoot 並清除斷點。
+    plan.stage = 'ending'; plan.sent = now; plan.clicked = true;
+    end.click();
+    log(`定時結束本局，按原生規則結算已拾取的卡片與裝備${pending.length ? `；收尾到時，仍有 ${pending.length} 件地面掉落未拾取` : ''}`);
+    return true;
+  }
   function autoSpeedStep(now) {
     if (!cfg.autoDoubleSpeed || state.speedDone) return;
     const g = state.game;
@@ -1185,6 +1280,7 @@ self.onmessage = event => {
       const now = performance.now();
       if (now < state.manualUntil) { stopMove(); return; }
       autoSpeedStep(now);
+      if (timedExitStep(now)) { state.errorCount = 0; return; }
       if (now - state.lastListRead > 1000) { state.lastListRead = now; if (visible($('#stages'))) readStages(); }
       if (bellStep(now)) { state.errorCount = 0; return; }
       if (collectReveal(now)) return;
@@ -1216,6 +1312,8 @@ self.onmessage = event => {
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '自動遠征已啟用' : '自動遠征已關閉'} · ${cfg.progression ? '首通開荒' : '固定副本'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}${cfg.progression ? `\n${state.progressionStatus}` : ''}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
+    ui.querySelector('#timed-exit-status').textContent = !cfg.timedExitEnabled ? '定時刷卡未啟用' : state.timedExit
+      ? `定時刷卡：${g?.state === 'over' ? '本局已結束，等待下一場' : state.timedExit.stage === 'collect' ? '收尾拾取中' : '等待原生結算'}` : `只在第 ${cfg.expeditionLap} 周目 ${cfg.expedition} 生效，局內 ${cfg.timedExitMinutes} 分鐘開始收尾`;
     ui.querySelector('#speed-status').textContent = !cfg.autoDoubleSpeed ? '自動2x未啟用' : state.speedApplied && g?.roSpd === 1
       ? '本局自動2x已處理；目前1x，保留遊戲降速／手動調整' : state.speedStatus;
     ui.querySelector('#bell-status').textContent = !cfg.dodge || !cfg.bellShelter ? '鐘罩避難未啟用（需同時開啟自動避怪）' : state.bellStatus;
@@ -1227,6 +1325,7 @@ self.onmessage = event => {
     ui.querySelector('#log').textContent = state.logs.slice(-10).map(e => `${e.time} ${e.message}`).join('\n');
   }
   function populate() {
+    renderProfiles();
     for (const el of ui.querySelectorAll('[data-sell-quality]')) el.checked = cfg.sellQualities.includes(Number(el.dataset.sellQuality));
     for (const el of ui.querySelectorAll('[data-setting]')) {
       const value = cfg[el.dataset.setting];
@@ -1303,6 +1402,11 @@ self.onmessage = event => {
       <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
       <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
       <p id="owned" class="hint"></p>
+      <details open><summary>各職業技能／寶箱配置</summary>
+      <label>編輯職業<select id="job-profile"></select></label><small id="profile-status"></small>
+      <button id="copy-shared-profile">把舊版共用備份複製到此職業</button>
+      <small>進入遊戲自動識別職業，一轉／二轉／三轉分開保存。手動切換編輯檔案會暫停助手；再次啟動時使用目前遊戲職業。新非法系職業預設不指定前三技，可自由選牌。</small></details>
+      ${['first', 'second', 'third'].map((key, i) => `<label>第 ${i + 1} 個技能（空白＝任意技能）<input data-setting="${key}" list="skills-list" placeholder="技能名稱或 ID"></label>`).join('')}
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
       <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 個技能時生效"></label>
@@ -1334,6 +1438,10 @@ self.onmessage = event => {
       <label>固定副本／開荒起點<select data-setting="expedition"></select></label><button id="read-stages">讀取遊戲副本清單</button>
       <div class="row"><label>自動開局上限（0＝不限）<input data-setting="repeatLimit" type="number" min="0" max="9999"></label><label>局間等待毫秒<input data-setting="repeatDelay" type="number" min="1500" max="60000"></label></div>
       <p id="repeat-status" class="hint"></p><small>開荒需同時勾選自動遠征：從所選地圖開始，按原生已通關標記推進，失敗重試；包含聖誕節、元宵節，後續周目跳過劇情關。下一圖僅裝備分數不足時回刷當前已通關副本，每局結算後重查，達標即推進；跨周目也適用。沿用已勾選的結算穿裝／出售與開局上限；其他解鎖條件不足時等待。六周目完成後等待，關閉開荒則固定重刷。</small>
+      <h4>定時退圖刷卡</h4><label><input data-setting="timedExitEnabled" type="checkbox"> 到時收尾拾取並結束結算（固定地圖，與開荒互斥）</label>
+      <div class="row"><label>局內幾分鐘後收尾<input data-setting="timedExitMinutes" type="number" min="0.1" max="180" step="0.1"></label><label>收尾最長局內秒數<input data-setting="cleanupSeconds" type="number" min="0" max="120"></label></div>
+      <button id="tree-card-preset">套用樹精卡循環：一周目斐揚森林／3分鐘</button><p id="timed-exit-status" class="hint"></p>
+      <small>只作用於所選副本與周目。到時先收取已出現的卡片、裝備、寵物蛋（卡片優先），再走原生結束結算；未撿到的不會憑空入帳。勾選自動遠征後重進同圖，受開局上限與結算整理設定控制。分鐘與收尾秒數均為局內時間，2x下約減半；組隊、劇情、PVP、無限之塔、錄像不使用此功能。</small>
       </details>
       <details><summary>結算後裝備整理</summary>
       <label><input data-setting="autoEquip" type="checkbox"> 打完副本後自動一鍵穿更優裝備</label>
@@ -1369,6 +1477,22 @@ self.onmessage = event => {
     ui.querySelector('#reset-position').onclick = resetPanelPosition;
     installPanelDrag();
     ui.querySelector('#toggle').onclick = toggle;
+    ui.querySelector('#job-profile').onchange = event => {
+      cfg.enabled = false; stopMove(); releaseTownKeys(); syncBackground();
+      const id = event.target.value === 'shared' ? '' : event.target.value;
+      switchProfile(id, state.profileJobs[id] || {}); log('已切換編輯職業並暫停助手；啟動時會載入目前遊戲職業');
+    };
+    ui.querySelector('#copy-shared-profile').onclick = () => {
+      if (!cfg.profileJob || !cfg.jobProfiles.shared) { log('請先選擇要接收備份的職業'); return; }
+      cfg = validateConfig({ ...cfg, ...profileSettings(cfg.jobProfiles.shared), enabled: false });
+      stopMove(); releaseTownKeys(); syncBackground(); save(); resetPicker(); populate(); log('已把舊版共用備份複製到此職業，保持暫停');
+    };
+    ui.querySelector('#tree-card-preset').onclick = () => {
+      if (!cfg.repeat) state.runsStarted = 0;
+      cfg = validateConfig({ ...cfg, repeat: true, progression: false, expedition: 'payon', expeditionLap: 1, timedExitEnabled: true, timedExitMinutes: 3, cleanupSeconds: 20, pickups: true });
+      state.timedExit = null; state.flow = null; state.expeditionProbe = null; state.farmPlan = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false;
+      stopMove(); save(); populate(); log('已設定一周目斐揚森林3分鐘刷卡循環；到時收尾拾取後結算，啟動助手後執行');
+    };
     ui.addEventListener('keydown', e => { if (e.key !== 'F8' && e.key !== 'F9') e.stopPropagation(); });
     ui.addEventListener('keyup', e => e.stopPropagation());
     ui.addEventListener('input', e => {
@@ -1380,7 +1504,10 @@ self.onmessage = event => {
       const el = e.target;
       if (el.dataset.setting) {
         const key = el.dataset.setting, wasRepeat = cfg.repeat;
-        cfg = validateConfig({ ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value }); stopMove(); releaseTownKeys();
+        const patch = { ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value };
+        if (key === 'progression' && patch.progression) patch.timedExitEnabled = false;
+        cfg = validateConfig(patch); stopMove(); releaseTownKeys();
+        if (['timedExitEnabled', 'timedExitMinutes', 'cleanupSeconds', 'expedition', 'expeditionLap', 'progression'].includes(key)) state.timedExit = null;
         if (key === 'autoDoubleSpeed') resetAutoSpeed();
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
         if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.expeditionProbe = null; state.farmPlan = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
@@ -1400,7 +1527,12 @@ self.onmessage = event => {
         syncPriorityTiers(slot, result.tier); el.value = '';
         if (!result.added) log(`該物品已在第 ${result.tier + 1} 優先級，已保留原設定`);
       }
-      save(); syncBackground(); renderStatus();
+      save(); syncBackground();
+      if (['timedExitEnabled', 'progression'].includes(el.dataset.setting)) {
+        ui.querySelector('[data-setting="timedExitEnabled"]').checked = cfg.timedExitEnabled;
+        ui.querySelector('[data-setting="progression"]').checked = cfg.progression;
+      }
+      renderStatus();
     });
     ui.querySelector('#banish-toggle').onclick = () => { cfg.banish = !cfg.banish; save(); renderStatus(); };
     ui.querySelector('#exclude-toggle').onclick = () => { cfg.banishExcludeEnabled = !cfg.banishExcludeEnabled; save(); renderStatus(); };
@@ -1414,6 +1546,8 @@ self.onmessage = event => {
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+        profile: { job: cfg.profileJob, gameJob: gameJobId(g), saved: Object.keys(cfg.jobProfiles) },
+        timedExit: { enabled: cfg.timedExitEnabled, minutes: cfg.timedExitMinutes, cleanupSeconds: cfg.cleanupSeconds, phase: state.timedExit?.stage, pending: state.timedExit ? [...state.timedExit.items].filter(item => !item.dead).length : 0 },
         speed: { enabled: cfg.autoDoubleSpeed, native: g?.roSpd, applied: state.speedApplied, handled: state.speedDone, attempted: state.speedAttempted, status: state.speedStatus },
         expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap, probe: state.expeditionProbe, farming: state.farmPlan },
         bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
@@ -1423,7 +1557,7 @@ self.onmessage = event => {
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.timedExit = null; state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);

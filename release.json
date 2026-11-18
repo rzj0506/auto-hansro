@@ -1,8 +1,8 @@
 {
-  "version": "1.10.0",
+  "version": "1.11.0",
   "repository": "rzj0506/auto-hansro",
   "branch": "userscript-release",
   "downloadURL": "https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js",
   "updateURL": "https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js",
-  "sha256": "961f434a697487a484c125d328b1c591debb55863140f76c7d23346f137b479e"
+  "sha256": "db321d2ab9425e90e0c725b6ef55ddd41e49c0351817dbfabc3ad0c2de881137"
 }

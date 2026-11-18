@@ -1,0 +1,5 @@
+{
+  "source": "https://ro.hans-webgametw.com/build/main-BNOcv2PN.hzcc4d908b.js",
+  "retrieved": "2026-11-18",
+  "banishChestCard": "function banishChestCard(e,t){return this.perksLeft.banish<=0?null:(this.perksLeft.banish--,this.banishedItems.add(e.item),this.focusedItems.delete(e.item),this.runItems.roll(this.deityLearned(),this.chestOpts(),1,t.map(n=>n.slot))[0]??this.runItems.rollSlot(e.slot,this.deityLearned(),this.chestOpts()))}"
+}

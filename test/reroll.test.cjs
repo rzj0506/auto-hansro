@@ -1340,3 +1340,116 @@ test('network failure does not expose provider details, retry mail or disable th
     assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,true);
   }finally{f.close();}
 });
+
+async function deityScenario(f, owned={}) {
+  const registry=(await f.w.__testImport()).registry;
+  for(const id of C.FIXED)registry[id].create=()=>{};
+  f.items.g_thought={id:'g_thought',slot:'deity',name:'思考神格'};
+  const nativePool=f.w.eval(`(function(ws){return ${native.chestSlotItems}})`)(f.items);
+  const nativeBanish=f.w.eval(`(${require('./fixtures/native-deity.json').banishChestCard})`);
+  const counts={picks:[],attempts:[],confirm:0,banish:[],card:0,deck:0,rng:0};
+  let replacement='p_cd';
+  function nextGame(items={}) {
+    f.game={...f.game,player:{...f.game.player},runItems:{slots:new Map(Object.entries(items)),slotItems:nativePool,
+      roll(){counts.rng++;return[{slot:f.items[replacement]?.slot||'deity',item:replacement}]},rollSlot(){assert.fail('native banish fallback not needed')}},
+      perksLeft:{reroll:9,reroll_card:9,deity:1,banish:3},banishedItems:new Set(),focusedItems:new Set(),
+      deityLearned:()=>[...C.FIXED],chestOpts(){return{swap:this.perksLeft.deity>0,banished:this.banishedItems,useless:new Set()}}};
+    f.hooks.start[0](f.game);
+  }
+  nextGame(owned);
+  const picker=f.w.document.querySelector('#picker');
+  function draw(ids,{newBox=false,banishDisabled=false,confirm=true}={}) {
+    if(newBox)f.game.openingChest={};
+    f.game.state='levelup';picker.classList.remove('hidden','closing');picker.querySelector('#pk-title').textContent='寶箱';
+    const box=picker.querySelector('#pk-cards');box.innerHTML='';
+    ids.forEach((id,index)=>{
+      const item=f.items[id]||{id,slot:'deity',name:registry[id].name+' 神格'},slot=f.w.document.createElement('div');slot.className='pk-slot';
+      slot.innerHTML=`<button class="pk-card"><span class="pk-name">${item.name}</span><span class="pk-sub">${{potion:'藥水',deity:'神格'}[item.slot]}</span><span class="pk-badge">普通</span><span class="pk-lines">測試</span></button><button class="pk-act" title="重抽單張">重抽<small>9</small></button><button class="pk-act" title="放逐" ${banishDisabled?'disabled':''}>放逐<small>3</small></button>`;
+      const finish=()=>{counts.picks.push(id);f.game.runItems.slots.set(item.slot,{item:id,vals:[1]});picker.classList.add('hidden');f.game.openingChest=null;f.game.state='playing';};
+      slot.querySelector('.pk-card').onclick=()=>{
+        counts.attempts.push(id);
+        if(confirm&&item.slot==='deity'&&f.game.runItems.slots.get('deity')?.item&&f.game.runItems.slots.get('deity').item!==id){
+          slot.insertAdjacentHTML('beforeend','<div class="pk-back"><button data-yes>確認替換</button></div>');
+          f.w.setTimeout(()=>slot.classList.add('asking'),160);
+          slot.querySelector('[data-yes]').onclick=()=>{counts.confirm++;finish()};
+        }else finish();
+      };
+      const buttons=slot.querySelectorAll('.pk-act');buttons[0].onclick=()=>counts.card++;
+      buttons[1].onclick=()=>{
+        counts.banish.push(id);
+        const result=nativeBanish.call(f.game,{slot:item.slot,item:id},ids.map(key=>({slot:f.items[key]?.slot||'deity'})));
+        const after=[...ids];if(result)after[index]=result.item;else after.splice(index,1);
+        draw(after,{confirm});
+      };
+      box.append(slot);
+    });
+    picker.querySelector('#pk-bar').innerHTML='<button class="pk-act" title="重抽整組">重抽<small>9</small></button>';
+    picker.querySelector('#pk-bar .pk-act').onclick=()=>counts.deck++;
+  }
+  function step(n=5){for(let i=0;i<n;i++){f.hooks.tick[0](f.game);f.advance(1100)}}
+  function diagnostic(){f.ui.querySelector('#diagnose').click();return JSON.parse(f.ui.querySelector('#config').value)}
+  return{draw,step,counts,nextGame,diagnostic,setReplacement(id){replacement=id}};
+}
+
+test('actual deity override completes native asking confirmation once, retains chosen deity in later chests and uses no rerolls',async()=>{
+  const f=await browserFixture({chestReroll:false,deityOverrideEnabled:true,deityOverrides:'firebolt',priorities:{deity:'g_thought',potion:'p_cd'}});
+  try{
+    const s=await deityScenario(f,{deity:{item:'g_thought',vals:Array(14).fill(1)}});
+    s.draw(['g_thought','firebolt','p_cd'],{newBox:true});s.step();
+    assert.deepEqual(s.counts.picks,['firebolt']);assert.equal(s.counts.confirm,1);assert.deepEqual(s.counts.attempts,['firebolt']);
+    s.draw(['g_thought','p_cd'],{newBox:true});s.step();
+    assert.deepEqual(s.counts.picks,['firebolt','p_cd']);assert.equal(f.game.runItems.slots.get('deity').item,'firebolt');
+    assert.equal(s.counts.card+s.counts.deck+s.counts.rng,0);
+  }finally{f.close();}
+});
+
+test('actual next-offer banish preserves acquired passive, redraws the same chest then picks another first-tier card',async()=>{
+  const f=await browserFixture({chestReroll:false,deityOverrideEnabled:true,deityOverrides:'firebolt',deityBanishAfterPick:true,priorities:{potion:'p_cd'}});
+  try{
+    const s=await deityScenario(f);s.draw(['firebolt'],{newBox:true});s.step();assert.deepEqual(s.counts.banish,[]);
+    s.draw(['firebolt','p_hp'],{newBox:true});s.step();
+    assert.deepEqual(s.counts.banish,['firebolt']);assert.deepEqual(s.counts.picks,['firebolt','p_cd']);
+    assert.equal(f.game.perksLeft.banish,2);assert.equal(f.game.runItems.slots.get('deity').item,'firebolt');
+    assert(f.game.banishedItems.has('firebolt'));assert.equal(f.game.perksLeft.reroll,9);assert.equal(f.game.perksLeft.reroll_card,9);
+    assert.equal(s.diagnostic().usedRerolls,0);assert.equal(s.counts.rng,1);
+  }finally{f.close();}
+});
+
+test('acquired deity history survives rescan and replacement but starts fresh for the next run',async()=>{
+  const f=await browserFixture({chestReroll:false,deityBanishAfterPick:true});
+  try{
+    const s=await deityScenario(f,{deity:{item:'firebolt',vals:[1]}});f.hooks.tick[0](f.game);
+    f.game.runItems.slots.set('deity',{item:'coldbolt',vals:[1]});f.hooks.tick[0](f.game);f.ui.querySelector('#rescan').click();
+    s.draw(['firebolt'],{newBox:true});s.step();assert.deepEqual(s.counts.banish,['firebolt']);
+    assert.deepEqual(s.diagnostic().deity.acquired.sort(),['coldbolt','firebolt']);
+    s.nextGame();s.draw(['firebolt'],{newBox:true});s.step();
+    assert.deepEqual(s.counts.banish,['firebolt']);assert.equal(f.game.runItems.slots.get('deity').item,'firebolt');
+  }finally{f.close();}
+});
+
+test('disabled banish, zero charges or unmatched explicit list follows existing picker settings without clicking banish',async()=>{
+  const f=await browserFixture({chestReroll:false,deityBanishAfterPick:true,priorities:{potion:'p_cd'}});
+  try{
+    const s=await deityScenario(f,{deity:{item:'firebolt',vals:[1]}});
+    s.draw(['firebolt','p_cd'],{newBox:true,banishDisabled:true});s.step();
+    f.game.perksLeft.banish=0;s.draw(['firebolt','p_cd'],{newBox:true});s.step();
+    f.game.perksLeft.banish=3;f.setting('deityBanishTargets','coldbolt');s.draw(['firebolt','p_cd'],{newBox:true});s.step();
+    assert.deepEqual(s.counts.banish,[]);assert.deepEqual(s.counts.picks,['p_cd','p_cd','p_cd']);assert.equal(s.counts.rng,0);
+  }finally{f.close();}
+});
+
+test('deity options round-trip through actual UI, catalog selection, JSON and independent job profiles',async()=>{
+  const f=await browserFixture();let saved;
+  try{
+    const s=await deityScenario(f);f.game.classDef={id:'mage',name:'魔法師'};f.hooks.tick[0](f.game);
+    f.setting('deityOverrideEnabled',true);f.setting('deityBanishAfterPick',true);f.setting('deityBanishTargets','firebolt');
+    const select=f.ui.querySelector('[data-deity-list="deityOverrides"]');select.value='firebolt';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+    assert.match(f.ui.querySelector('[data-setting="deityOverrides"]').value,/\[firebolt\]/);
+    f.ui.querySelector('#export').click();saved=JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(saved.jobProfiles.mage.deityOverrideEnabled,true);assert.equal(saved.jobProfiles.mage.deityBanishAfterPick,true);
+    f.game={...f.game,classDef:{id:'swordsman',name:'劍士'}};f.hooks.start[0](f.game);
+    assert.equal(f.ui.querySelector('[data-setting="deityOverrideEnabled"]').checked,false);assert.equal(f.ui.querySelector('[data-setting="deityBanishAfterPick"]').checked,false);
+    assert.equal(s.counts.picks.length,0);
+  }finally{f.close();}
+  const r=await browserFixture(saved);try{assert.equal(r.ui.querySelector('[data-setting="deityOverrideEnabled"]').checked,true);assert.equal(r.ui.querySelector('[data-setting="deityBanishTargets"]').value,'firebolt');}finally{r.close();}
+});

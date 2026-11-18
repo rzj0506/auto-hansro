@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.10.0
-// @description  遠征死亡郵件提醒、各職業技能與寶箱配置、定時刷卡、原生2倍速、六周目開荒及裝備整理。
+// @version      1.11.0
+// @description  指定神格覆蓋與選後放逐、遠征死亡郵件、職業配置、定時刷卡、原生2倍速及六周目開荒。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.10.0';
+  const VERSION = '1.11.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -45,6 +45,7 @@
     first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     profileJob: '', jobProfiles: {},
     chestFillFirst: true, chestSmartReroll: true, noFlipEnabled: false, noFlipMinutes: 10,
+    deityOverrideEnabled: false, deityOverrides: '', deityBanishAfterPick: false, deityBanishTargets: '',
     noFlipLevelEnabled: false, noFlipTotalLevel: 100,
     autoEquip: false, autoSell: false, sellQualities: [], expeditionLap: 1,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
@@ -58,7 +59,7 @@
   };
   const PROFILE_KEYS = ['first', 'second', 'third', 'fourth', 'fifth', 'skillSlots', 'skills', 'rarityFirst', 'skillReroll',
     'banish', 'banishBasic', 'banishExcludeEnabled', 'banishExclude', 'noFlipEnabled', 'noFlipMinutes', 'noFlipLevelEnabled', 'noFlipTotalLevel',
-    'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'priorities', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
+    'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'priorities', 'deityOverrideEnabled', 'deityOverrides', 'deityBanishAfterPick', 'deityBanishTargets', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
   const profileSettings = config => Object.fromEntries(PROFILE_KEYS.map(key => [key, JSON.parse(JSON.stringify(config[key]))]));
   const gameJobId = game => {
     const id = game?.promotion || game?.look?.promotion || game?.classDef?.id;
@@ -217,7 +218,35 @@
   }
   function chestItem(id, slot, catalog, extra = {}) {
     const found = catalog.find(item => item.slot === slot && item.id === id);
-    return { ...extra, ...found, id, slot, name: found?.name || extra.name || ITEM_NAMES[id] || id };
+    return { ...extra, ...found, id, slot, name: found?.name || extra.name || ITEM_NAMES[id] || (slot === 'deity' && SKILL_NAMES[id] ? `${SKILL_NAMES[id]} 神格` : id) };
+  }
+  function deityListTier(card, value) {
+    if (card.slot !== 'deity') return 1000;
+    const bare = { ...card, name: baseName(card.name).replace(/\s*(?:Deity|神格)$/i, '') };
+    const tier = splitTiers(value).findIndex(group => group.some(token => matchToken(token, card) || matchToken(token, bare)));
+    return tier < 0 ? 1000 : tier;
+  }
+  function protectsDeity(card, cfg, owned, catalog = []) {
+    const current = owned?.deity;
+    if (!cfg.deityOverrideEnabled || card.slot !== 'deity' || !current?.item || card.id === current.item) return false;
+    const tier = deityListTier(chestItem(current.item, 'deity', catalog, current), cfg.deityOverrides);
+    return tier < 1000 && deityListTier(card, cfg.deityOverrides) >= tier;
+  }
+  function deityBanishCandidate(cards, cfg, owned = null, context = {}) {
+    if (!cfg.deityBanishAfterPick || Number.isFinite(context.banishLeft) && context.banishLeft <= 0) return null;
+    const seen = new Set(context.acquiredDeities || []);
+    if (owned?.deity?.item) seen.add(owned.deity.item);
+    const specified = splitTiers(cfg.deityBanishTargets).length > 0;
+    return cards.find(card => card.slot === 'deity' && card.id && card.canBanish && seen.has(card.id)
+      && (specified ? deityListTier(card, cfg.deityBanishTargets) < 1000 : context.skillDeities?.includes(card.id))) || null;
+  }
+  function deityOverrideCandidate(cards, cfg, owned = null, context = {}, catalog = []) {
+    if (!cfg.deityOverrideEnabled || !splitTiers(cfg.deityOverrides).length) return null;
+    return cards.filter(card => card.slot === 'deity' && card.id && deityListTier(card, cfg.deityOverrides) < 1000
+      && !(owned?.deity?.item && owned.deity.item !== card.id && context.swapDeity === false)
+      && !protectsDeity(card, cfg, owned, catalog))
+      .sort((a, b) => deityListTier(a, cfg.deityOverrides) - deityListTier(b, cfg.deityOverrides)
+        || Number(owned?.deity?.item !== a.id) - Number(owned?.deity?.item !== b.id) || b.rarity - a.rarity || a.index - b.index)[0] || null;
   }
   function chestNeed(slot, cfg, owned, catalog) {
     if (!cfg.chestFillFirst || owned === null) return 0;
@@ -231,13 +260,15 @@
   function rankChest(cards, cfg, owned = null, catalog = []) {
     const level = card => cfg.chestFillFirst && owned !== null ? Number(owned[card.slot]?.level) || 0 : 0;
     const loss = card => owned?.[card.slot]?.item && card.id && owned[card.slot].item !== card.id ? Number(owned[card.slot].level) || 1 : 0;
-    return cards.map(card => ({ ...card, tier: tierOf(card, cfg) })).sort((a, b) =>
+    return cards.filter(card => !protectsDeity(card, cfg, owned, catalog)).map(card => ({ ...card, tier: tierOf(card, cfg) })).sort((a, b) =>
       a.tier - b.tier || chestNeed(a.slot, cfg, owned, catalog) - chestNeed(b.slot, cfg, owned, catalog)
       || loss(a) - loss(b) || level(a) - level(b) || b.rarity - a.rarity || a.index - b.index);
   }
   function chestTargets(cfg, catalog = [], owned = null, context = {}) {
     return Object.keys(SLOT_NAMES).flatMap(slot => {
       if (!splitTiers(cfg.priorities[slot]).length) return [];
+      if (slot === 'deity' && cfg.deityOverrideEnabled && owned?.deity?.item
+        && deityListTier(chestItem(owned.deity.item, slot, catalog), cfg.deityOverrides) < 1000) return [];
       let pool = context.reachableBySlot?.[slot];
       const confirmed = Array.isArray(pool);
       const current = owned?.[slot];
@@ -249,7 +280,7 @@
       }
       const known = Array.isArray(pool);
       const items = known ? pool.map(item => typeof item === 'string' ? chestItem(item, slot, catalog) : chestItem(item.id, slot, catalog, item))
-        .filter(item => tierOf(item, cfg) === 0) : [];
+        .filter(item => tierOf(item, cfg) === 0 && !protectsDeity(item, cfg, owned, catalog)) : [];
       if (known && !items.length) return [];
       return [{ slot, need: chestNeed(slot, cfg, owned, catalog), known, confirmed, items }];
     });
@@ -267,9 +298,14 @@ self.onmessage = event => {
   if (event.data === 'stop' && timer !== null) { clearInterval(timer); timer = null; }
 };`;
   function chestDecision(cards, cfg, budget, deckAvailable, catalog = [], owned = null, context = {}) {
+    const banished = deityBanishCandidate(cards, cfg, owned, context);
+    if (banished) return { type: 'banish', card: banished, reason: '本局已選過此神格，再次出現時放逐寶箱牌；保留目前神格，不放逐技能升級' };
+    const override = deityOverrideCandidate(cards, cfg, owned, context, catalog);
+    if (override) return { type: 'pick', card: override, reason: owned?.deity?.item && owned.deity.item !== override.id
+      ? '指定神格優先覆蓋，高於寶箱第一優先級；按原生流程確認替換，原神格累計等級會失去' : '選取指定神格，高於寶箱第一優先級' };
     const ranked = rankChest(cards, cfg, owned, catalog);
     const configured = Object.values(cfg.priorities).some(x => splitTiers(x).length);
-    if (!ranked.length) return { type: 'wait', reason: '沒有可識別卡片' };
+    if (!ranked.length) return { type: 'wait', reason: cards.length ? '保護已選定的指定神格，不回換同級或較低優先級神格；等待手動選擇' : '沒有可識別卡片' };
     const good = ranked.find(card => card.tier === 0);
     const targets = chestTargets(cfg, catalog, owned, context);
     const filled = chestFilledSlots(owned);
@@ -338,7 +374,8 @@ self.onmessage = event => {
   function validateConfig(raw, includeProfiles = true) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression', 'timedExitEnabled', 'deathMailEnabled']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'deityOverrideEnabled', 'deityBanishAfterPick', 'noFlipEnabled', 'noFlipLevelEnabled', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression', 'timedExitEnabled', 'deathMailEnabled']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['deityOverrides', 'deityBanishTargets']) if (typeof raw[key] === 'string') out[key] = raw[key].slice(0, 5000);
     if (Number.isInteger(Number(raw.expeditionLap)) && Number(raw.expeditionLap) >= 1 && Number(raw.expeditionLap) <= 99) out.expeditionLap = Number(raw.expeditionLap);
     if (Number.isFinite(Number(raw.noFlipMinutes))) out.noFlipMinutes = clamp(Math.round(Number(raw.noFlipMinutes) * 10) / 10, 0, 180);
     if (Number.isFinite(Number(raw.noFlipTotalLevel))) out.noFlipTotalLevel = clamp(Math.round(Number(raw.noFlipTotalLevel)), 1, 99999);
@@ -468,7 +505,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -495,6 +532,7 @@ self.onmessage = event => {
     noFlipDone: false, postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false,
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
     profileJobs: {}, runJob: '', timedExit: null,
+    deitySeen: new WeakMap(),
     mailSeen: new WeakSet(), mailQueue: [], mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
   };
   let root, panel, ui, interval, attachTimer;
@@ -693,7 +731,7 @@ self.onmessage = event => {
       icon: abs(d.img ? 'assets/' + d.img : state.assets?.manifest?.items?.[d.icon]?.icon ? 'assets/' + state.assets.manifest.items[d.icon].icon : '') }));
     const learned = game?.deityLearned?.() || [];
     for (const [id, def] of Object.entries(state.registry)) {
-      if (typeof def?.create === 'function' && !id.startsWith('atk_')) items.push({ id, slot: 'deity', name: `${def.name} Deity`, available: learned.includes(id), icon: abs(state.assets?.icons?.get(def.icon)) });
+      if (typeof def?.create === 'function' && !id.startsWith('atk_')) items.push({ id, slot: 'deity', skillDeity: true, name: `${def.name} Deity`, available: learned.includes(id), icon: abs(state.assets?.icons?.get(def.icon)) });
     }
     state.catalog = items;
     if (ui) {
@@ -709,6 +747,11 @@ self.onmessage = event => {
       for (const key of ['first', 'second', 'third', 'fourth', 'fifth']) {
         const el = ui.querySelector(`[data-setting="${key}"]`), id = skillId(cfg[key], state.registry);
         if (id && el !== ui.activeElement) el.value = `${SKILL_NAMES[id] || state.registry[id]?.name || id} [${id}]`;
+      }
+      for (const select of ui.querySelectorAll('[data-deity-list]')) {
+        const old = select.value;
+        select.innerHTML = '<option value="">從神格表加入名單…</option>' + items.filter(item => item.slot === 'deity').map(item => `<option value="${esc(item.id)}">${esc(item.name.replace(/Deity/g, '神格'))} [${esc(item.id)}]${item.available === false ? '（本局未學）' : ''}</option>`).join('');
+        select.value = old;
       }
       renderExclusions();
     }
@@ -771,6 +814,7 @@ self.onmessage = event => {
   function observeGame(g) {
     if (!g?.player || typeof g.moveTo !== 'function' || !Array.isArray(g.enemies)) return;
     maybeQueueDeath(g);
+    rememberDeity(g);
     const job = gameJobId(g);
     if (job && (state.game !== g || state.runJob !== job)) { state.runJob = job; syncProfile(g); }
     if (state.game === g) return;
@@ -870,9 +914,18 @@ self.onmessage = event => {
     if (!hud || !hud.querySelector('.run-slot')) return null;
     return Object.fromEntries([...hud.querySelectorAll('.run-slot[data-item]:not(.empty)')].map(el => [el.dataset.item, { level: (Number(text(el, '.lvl').replace('+', '')) || 0) + 1 }]));
   }
+  function rememberDeity(game = state.game) {
+    if (!game) return new Set();
+    let seen = state.deitySeen.get(game);
+    if (!seen) { seen = new Set(); state.deitySeen.set(game, seen); }
+    const id = game.runItems?.slots?.get?.('deity')?.item;
+    if (typeof id === 'string' && id) seen.add(id);
+    return seen;
+  }
   function readChestContext() {
     const g = state.game, reachableBySlot = {};
-    const context = { reachableBySlot, swapDeity: Number.isFinite(g?.perksLeft?.deity) ? g.perksLeft.deity > 0 : undefined };
+    const context = { reachableBySlot, swapDeity: Number.isFinite(g?.perksLeft?.deity) ? g.perksLeft.deity > 0 : undefined,
+      acquiredDeities: rememberDeity(g), banishLeft: g?.perksLeft?.banish, skillDeities: state.catalog.filter(item => item.skillDeity).map(item => item.id) };
     if (typeof g?.runItems?.slotItems !== 'function' || typeof g.deityLearned !== 'function' || typeof g.chestOpts !== 'function') return context;
     try {
       const learned = g.deityLearned(), options = g.chestOpts();
@@ -966,6 +1019,10 @@ self.onmessage = event => {
     const result = chestDecision(cards, cfg, { used: state.used, card: left?.reroll_card ?? cardLeft, deck: left?.reroll ?? Number(text(deck, 'small') || 0) }, !!deck, state.catalog, ownedChestSlots(), readChestContext());
     if (result.type === 'pick') return pick(result.card, now, result.reason);
     if (result.type === 'wait') { log(result.reason); return; }
+    if (result.type === 'banish') {
+      if (!result.card.banish?.isConnected || result.card.banish.disabled) return;
+      state.pending = { type: 'banish', at: now }; result.card.banish.click(); log(`放逐寶箱神格：${result.card.name}；${result.reason}`); return;
+    }
     const button = result.type === 'card' ? result.card.reroll : deck;
     if (!button || button.disabled) return;
     state.used++; state.pending = { type: result.type, at: now };
@@ -1554,6 +1611,16 @@ self.onmessage = event => {
       <small id="chest-stage"></small><br><small>依已填欄位數分階段：先用整組快速選定任意兩欄，之後優先單張追其餘三欄首選；缺少目標類型或單張不可用時，剩餘整組仍可補齊。已有首選就保住它，不整組冒險；整組不可用時可改單張。先比配置優先級，普通物品鎖定品種後不對不可達目標浪費次數。</small>
       <p class="hint">每行一級，同一行可並列多項（用 | 分隔）。先選要加入的級別，再從物品表選入；同級自動並列，選「新增優先級」另起一級。任一並列首選命中都視為第一優先級。空白＝無指定；可填名稱／ID，包含匹配須寫 *傷害*。</p>
       ${Object.entries(SLOT_NAMES).map(([id, name]) => `<h4>${name}</h4><label>加入哪個優先級<select data-priority-tier="${id}" aria-label="${name}加入優先級"><option value="new">新增優先級</option></select></label><select data-catalog="${id}"><option>等待物品表…</option></select><textarea data-priority="${id}" placeholder="第一優先級 A | 第一優先級 B\n第二優先級 C | 第二優先級 D"></textarea>`).join('')}
+      <h4>指定神格覆蓋／選後放逐</h4>
+      <label><input data-setting="deityOverrideEnabled" type="checkbox"> 指定神格出現時優先覆蓋（高於寶箱第一優先級）</label>
+      <select data-deity-list="deityOverrides" aria-label="加入優先覆蓋神格"><option value="">等待神格表…</option></select>
+      <textarea data-setting="deityOverrides" aria-label="優先覆蓋神格名單" placeholder="火箭術 神格 [firebolt]\n冰箭術 神格 [coldbolt] | 雷擊術 神格 [lightning]"></textarea>
+      <small>僅在指定神格已出現且原生允許時優先選取，不額外追抽。每行一級、| 並列；替換後不回換同級／較低優先級神格，可換更高級指定神格。替換會失去原神格累計等級，沿用遊戲確認流程。</small>
+      <label><input data-setting="deityBanishAfterPick" type="checkbox"> 本局選過的神格再次出現時自動放逐寶箱牌</label>
+      <label>放逐名單（留空＝所有職業／技能神格）</label>
+      <select data-deity-list="deityBanishTargets" aria-label="加入選後放逐神格"><option value="">等待神格表…</option></select>
+      <textarea data-setting="deityBanishTargets" aria-label="選後放逐神格名單" placeholder="留空：所有職業／技能神格；也可指定火箭術 神格 [firebolt]"></textarea>
+      <small>只放逐本局已實際取得、再次出現且有可用放逐按鈕的神格；未取得前不放逐。不移除目前神格，不消耗重抽次數，不影響技能升級牌。會消耗遊戲放逐次數（與技能放逐共用）；次數不足按原選牌設定處理。兩項設定均隨職業保存，預設關閉。</small>
       <label>允許的重抽方式／非智能模式先後順序<select data-setting="rerollMode"><option value="card-deck">單張＋整組（非智能時先單張）</option><option value="deck-card">整組＋單張（非智能時先整組）</option><option value="card">僅重抽單張</option><option value="deck">僅重抽整組</option><option value="off">不重抽</option></select></label>
       <small>智能開啟時依可達目標決定方式；關閉後依上述先後順序，遇到首選即選。僅單張／僅整組／不重抽始終有效。重抽遵守上限及保留次數，不為稀有度單獨追抽；首選全部留空時不重抽。</small>
       <div class="row"><label>每箱重抽上限<input data-setting="maxRerolls" type="number" min="0" max="50"></label><label>保留單張次數<input data-setting="reserveCard" type="number" min="0" max="99"></label><label>保留整組次數<input data-setting="reserveDeck" type="number" min="0" max="99"></label></div>
@@ -1646,6 +1713,12 @@ self.onmessage = event => {
         syncPriorityTiers(slot, result.tier); el.value = '';
         if (!result.added) log(`該物品已在第 ${result.tier + 1} 優先級，已保留原設定`);
       }
+      if (el.dataset.deityList && el.value) {
+        const key = el.dataset.deityList;
+        const result = appendPriorityTier(cfg[key], displayPriority(el.value, 'deity', state.catalog));
+        cfg[key] = result.value.slice(0, 5000); ui.querySelector(`[data-setting="${key}"]`).value = cfg[key]; el.value = '';
+        if (!result.added) log('該神格已在名單內，已保留原設定');
+      }
       save(); syncBackground();
       if (['timedExitEnabled', 'progression'].includes(el.dataset.setting)) {
         ui.querySelector('[data-setting="timedExitEnabled"]').checked = cfg.timedExitEnabled;
@@ -1665,6 +1738,7 @@ self.onmessage = event => {
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+        deity: { overrideEnabled: cfg.deityOverrideEnabled, overrides: cfg.deityOverrides, banishAfterPick: cfg.deityBanishAfterPick, banishTargets: cfg.deityBanishTargets, acquired: [...rememberDeity(g)] },
         email: { enabled: cfg.deathMailEnabled, configured: !mailSettingsError(mailSettings), queued: state.mailQueue.length, sending: state.mailBusy, accepted: state.mailAccepted, status: state.mailStatus },
         profile: { job: cfg.profileJob, gameJob: gameJobId(g), saved: Object.keys(cfg.jobProfiles) },
         timedExit: { enabled: cfg.timedExitEnabled, minutes: cfg.timedExitMinutes, cleanupSeconds: cfg.cleanupSeconds, phase: state.timedExit?.stage, pending: state.timedExit ? [...state.timedExit.items].filter(item => !item.dead).length : 0 },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.12.0
+// @version      1.12.1
 // @description  適配新版技能／寶箱保存與分開開啟、指定神格、職業配置、死亡郵件、定時刷卡及六周目開荒。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
@@ -15,10 +15,12 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.12.0';
+  const VERSION = '1.12.1';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
-  const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
+  const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
+  const SLOT_ALIASES = { potion: ['藥水', 'potion', 'poción', 'poção'], elixir: ['靈藥', '秘藥', 'elixir'],
+    blessing: ['祝福', 'blessing', 'bendición', 'bênção'], dish: ['料理', 'dish', 'plato', 'prato'], deity: ['神格', 'deity', 'divindade'] };
   const SKILL_NAMES = { firebolt: '火箭術', coldbolt: '冰箭術', lightning: '雷擊術' };
   const STAGES = [
     ['prontera', '普隆德拉原野'], ['sewer', '普隆德拉地下水道'], ['sunken', '失事輪'], ['byalan', '柏伊亞嵐島'],
@@ -93,7 +95,7 @@
   }
   const emailjsPayload = (settings, event) => ({ service_id: settings.serviceId, template_id: settings.templateId, user_id: settings.publicKey,
     template_params: { ...event, to_email: settings.toEmail } });
-  const CHAR_MAP = Object.fromEntries('唤喚 术術 击擊 伤傷 传傳 说說 优優 诗詩 回回 药藥 秘秘 复復 却卻 护護 围圍 采採 贪貪 诵誦 咏詠 双雙 掷擲 丰豐 饶饒 智智 烹烹 调調 闪閃 络絡 连連 链鏈 灵靈 圣聖 体體 力力 敏敏 捷捷 运運 龙龍 毁毀 灭滅 寿壽 烈烈 风風 祝祝 觉覺 醒醒 标標 数數 时時 间間 动動 速速 强強 冰冰 箭箭'.split(' ').map(x => [x[0], x[1]]));
+  const CHAR_MAP = Object.fromEntries('唤喚 术術 击擊 伤傷 传傳 说說 优優 诗詩 回回 药藥 秘秘 复復 却卻 护護 围圍 采採 贪貪 诵誦 咏詠 双雙 掷擲 丰豐 饶饒 智智 烹烹 调調 闪閃 络絡 连連 链鏈 灵靈 圣聖 体體 力力 敏敏 捷捷 运運 龙龍 毁毀 灭滅 寿壽 烈烈 风風 祝祝 觉覺 醒醒 标標 数數 时時 间間 动動 速速 强強 冰冰 箭箭 续續 剂劑'.split(' ').map(x => [x[0], x[1]]));
   const norm = value => String(value ?? '').normalize('NFKC').toLowerCase()
     .replace(/deity/g, '神格')
     .replace(/[\u3400-\u9fff]/g, ch => CHAR_MAP[ch] || ch)
@@ -105,9 +107,10 @@
   function matchToken(token, card) {
     const t = norm(tokenId(token) || token);
     if (!t) return false;
-    if (t === norm(card.id) || t === norm(baseName(card.name))) return true;
+    const names = [baseName(card.name), ITEM_NAMES[card.id]].filter(Boolean).map(norm);
+    if (t === norm(card.id) || names.includes(t)) return true;
     // 星號是顯式包含匹配；不默認用「傷害」匹配「爆擊傷害」。
-    return t.includes('*') && norm(baseName(card.name)).includes(t.replace(/\*/g, ''));
+    return t.includes('*') && names.some(name => name.includes(t.replace(/\*/g, '')));
   }
   function tierOf(card, cfg) {
     const tiers = splitTiers(cfg.priorities[card.slot]);
@@ -123,9 +126,23 @@
     return 0;
   }
   function resolveItem(name, slot, icon, catalog) {
-    const candidates = catalog.filter(i => i.slot === slot && norm(baseName(i.name)) === norm(baseName(name)));
+    const candidates = catalog.filter(i => (!slot || i.slot === slot) && norm(baseName(i.name)) === norm(baseName(name)));
     if (candidates.length === 1) return candidates[0];
-    return candidates.find(i => i.icon && i.icon === icon) || null;
+    const icons = candidates.filter(i => i.icon && i.icon === icon);
+    return icons.length === 1 ? icons[0] : null;
+  }
+  function chestCardIdentity(name, sub, icon, catalog = [], registry = {}, native = null) {
+    if (native && Object.hasOwn(SLOT_NAMES, native.slot) && typeof native.item === 'string' && /^[a-z][\w.-]{0,99}$/i.test(native.item)) {
+      return { slot: native.slot, id: native.item, identitySource: 'native' };
+    }
+    let slot = Object.entries(SLOT_ALIASES).find(([key, aliases]) => [key, ...aliases].some(label => norm(label) === norm(sub)))?.[0] || '';
+    const item = resolveItem(name, slot, icon, catalog);
+    if (item && Object.hasOwn(SLOT_NAMES, item.slot)) return { slot: item.slot, id: item.id, identitySource: 'catalog' };
+    if (slot === 'deity' || !slot && /(?:Deity|神格)\s*(?:\+\s*\d+)?$/i.test(name)) {
+      const id = skillId(baseName(name).replace(/\s*(?:Deity|神格)$/i, ''), registry);
+      if (id) return { slot: 'deity', id, identitySource: 'skill' };
+    }
+    return { slot, id: '', identitySource: slot ? 'label' : 'unknown' };
   }
   function upgradeOf(text) {
     const n = norm(text);
@@ -514,7 +531,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue, storedKindAllowed, storedCounts };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, chestCardIdentity, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue, storedKindAllowed, storedCounts };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -895,16 +912,16 @@ self.onmessage = event => {
     const name = text(button, '.pk-name'), slotEl = button.closest('.pk-slot');
     const sub = text(button, '.pk-sub'), badge = text(button, '.pk-badge');
     const lines = text(button, '.pk-lines');
-    let id = kind === 'skill' ? skillId(name, state.registry) : '', slot = '';
+    let id = kind === 'skill' ? skillId(name, state.registry) : '', slot = '', identitySource = '';
     if (kind === 'chest') {
-      slot = Object.keys(SLOT_NAMES).find(k => norm(sub) === norm(SLOT_NAMES[k]) || norm(sub) === norm(k)) || '';
-      if (!slot) slot = Object.entries({ potion: ['poción', 'potion'], elixir: ['elixir'], blessing: ['bendición', 'blessing'], dish: ['plato', 'dish'], deity: ['deity'] }).find(([, aliases]) => aliases.some(n => norm(sub) === norm(n)))?.[0] || '';
-      id = resolveItem(name, slot, button.querySelector('.pk-art img')?.src, state.catalog)?.id || '';
-      if (slot === 'deity' && !id) id = skillId(name.replace(/\s*(?:Deity|神格)\s*(?:\+\s*\d+)?$/i, ''), state.registry);
+      const native = nativeSaveApi(), buttons = [...(button.closest('#picker')?.querySelectorAll('#pk-cards .pk-card') || [])];
+      const current = native?.g === state.game && native.curT === 'chest' && Array.isArray(native.curK)
+        && native.curK.length === buttons.length && buttons[index] === button ? native.curK[index] : null;
+      ({ id, slot, identitySource } = chestCardIdentity(name, sub, button.querySelector('.pk-art img')?.src, state.catalog, state.registry, current));
     }
     const reroll = [...(slotEl?.querySelectorAll('.pk-act') || [])].find(b => /重抽|重擲|reroll/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
     const banish = [...(slotEl?.querySelectorAll('.pk-act') || [])].find(b => /放逐|banish/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
-    return { index, name, id, slot, sub, lines, rarity: rarityOf(badge), isNew: !!button.querySelector('.pk-ribbon') || /技能|habilidad|^skill$/i.test(badge), button, slotEl, reroll, canReroll: !!reroll, banish, canBanish: !!banish };
+    return { index, name, id, slot, identitySource, sub, lines, rarity: rarityOf(badge), isNew: !!button.querySelector('.pk-ribbon') || /技能|habilidad|^skill$/i.test(badge), button, slotEl, reroll, canReroll: !!reroll, banish, canBanish: !!banish };
   }
   function deckButton(picker) {
     return [...picker.querySelectorAll('#pk-bar .pk-act')].find(b => /重抽|reroll/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
@@ -1124,7 +1141,7 @@ self.onmessage = event => {
       }
       log(`技能牌沒有符合 ${limit} 技配置的選項；等待手動選擇`); return;
     }
-    if (cards.some(c => !c.slot)) { log('寶箱欄位未識別；等待手動選擇'); return; }
+    if (cards.some(c => !c.slot)) { log(`寶箱欄位未識別：${cards.filter(c => !c.slot).map(c => `${c.name}［${c.sub || '無類型'}］`).join('、')}；等待手動選擇`); return; }
     const deck = deckButton(picker), left = state.game?.perksLeft;
     const cardLeft = Math.max(0, ...cards.map(c => Number(text(c.reroll, 'small') || 0)));
     const result = chestDecision(cards, cfg, { used: state.used, card: left?.reroll_card ?? cardLeft, deck: left?.reroll ?? Number(text(deck, 'small') || 0) }, !!deck, state.catalog, ownedChestSlots(), readChestContext());
@@ -1887,7 +1904,7 @@ self.onmessage = event => {
         expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap, probe: state.expeditionProbe, farming: state.farmPlan },
         bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
           ...(state.bell ? { x: state.bell.x, y: state.bell.y, radius: state.bell.radius, sealed: state.bell.sealed, struck: state.bell.struck, charge: state.bell.charge } : {}) },
-        cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
+        cards: visible(picker) && kind ? [...picker.querySelectorAll('#pk-cards .pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, sub: c.sub, identitySource: c.identitySource, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };

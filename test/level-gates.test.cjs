@@ -34,9 +34,14 @@ test('new policies are per job, default off and never inherit removed time/skill
  assert.equal(cfg({skillSaveAtLevel:0}).skillSaveAtLevel,1);assert.equal(cfg({chestSaveAtTotal:1e6}).chestSaveAtTotal,99999);
 });
 
-test('NPC search moves beyond an approximate nameplate destination until native interaction range is reached',()=>{
- const npc={left:400,width:60,bottom:355},self={left:400,width:60,bottom:400};
- assert.deepEqual(C.npcApproachPoint(npc,self,0).keys,[]);
- assert.deepEqual(C.npcApproachPoint(npc,self,1).keys,['ArrowDown']);
- assert(C.npcApproachPoint(npc,self,5).keys.includes('ArrowRight'));
+test('native world directions account for camera yaw and shorten pulses near the actual NPC position',()=>{
+ const player={x:0,y:0},npc={x:100,y:0};
+ assert.deepEqual(C.townWorldPlan(player,npc,0).keys,['ArrowRight']);
+ assert.deepEqual(C.townWorldPlan(player,npc,Math.PI/2).keys,['ArrowDown']);
+ assert.equal(C.townWorldPlan(player,npc,0).duration,35);
+ assert.equal(C.townWorldPlan(player,{x:900,y:0},0).duration,140);
+ assert.equal(C.townWorldPlan(player,npc,undefined),null);
+ const sheet={},layer={children:[{x:1,y:2,children:[{sheet}]}]};
+ assert.deepEqual(C.townNpcPositions(layer,new Map([['npc_knight',sheet]])),{captain:{x:1,y:2}});
+ layer.children.push({x:3,y:4,children:[{sheet}]});assert.deepEqual(C.townNpcPositions(layer,new Map([['npc_knight',sheet]])),{});
 });

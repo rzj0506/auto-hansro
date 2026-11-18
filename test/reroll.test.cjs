@@ -87,7 +87,14 @@ async function browserFixture(saved = {}, mailSaved = null) {
   const hooks = { start: [], tick: [], hurt: [], cast: [], kill: [] };
   const registry = Object.fromEntries([...C.FIXED, 'soul_strike', 'napalm'].map(id => [id, { name: ({ firebolt: '火箭術', coldbolt: '冰箭術', lightning: '雷擊術', soul_strike: '聖靈召喚', napalm: '心靈爆破' })[id] }]));
   const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, p_dmg: { id: 'p_dmg', slot: 'potion', name: '傷害藥水' }, p_area: { id: 'p_area', slot: 'potion', name: '範圍藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' }, e_hp: { id: 'e_hp', slot: 'elixir', name: '生命秘藥' }, b_dmg: { id: 'b_dmg', slot: 'blessing', name: '傷害祝福' } };
-  w.__testImport = async () => ({ hooks, registry, items });
+  const camera={yaw:0,targetYaw:0,zoom:.2,targetZoom:.2},assets={icons:new w.Map(),itemTextures:new w.Map(),sheets:new w.Map([['npc_knight',{}],['npc_vendor',{}]]),manifest:{items:{}}};
+  const World=w.eval(`(function(camera){return class World{
+    setView(x,y){this.focus={x,y}} render(layer){this.layer=layer}
+    project(x,y,z=0){const dx=x-(this.focus?.x||0),dy=y-(this.focus?.y||0);return{x:512+(dx*Math.cos(camera.yaw)-dy*Math.sin(camera.yaw))*.5,y:384+(dx*Math.sin(camera.yaw)+dy*Math.cos(camera.yaw))*.3-z*.5}}
+    pickGround(x,y){const dx=(x-512)/.5,dy=(y-384)/.3;return{x:(this.focus?.x||0)+dx*Math.cos(camera.yaw)+dy*Math.sin(camera.yaw),y:(this.focus?.y||0)-dx*Math.sin(camera.yaw)+dy*Math.cos(camera.yaw)}}
+    spriteLift(height){return height} setCellCursor(){}
+  }} )`)(camera);
+  w.__testImport = async () => ({ hooks, registry, items, World, camera, assets });
   w.eval(source.replace('await import(urls[0])', 'await window.__testImport(urls[0])'));
   await new Promise(resolve => setImmediate(resolve));
   const ui = w.document.querySelector('#ro-survivors-helper-host').shadowRoot;
@@ -120,7 +127,7 @@ async function browserFixture(saved = {}, mailSaved = null) {
     advance(100); advance(1100);
     return counts;
   }
-  return { w, ui, game, hooks, items, setting, advance, picker, errors, close() { assert.deepEqual(errors, []); dom.window.close(); } };
+  return { w, ui, game, hooks, items, World, camera, assets, setting, advance, picker, errors, close() { assert.deepEqual(errors, []); dom.window.close(); } };
 }
 
 for (const skillReroll of [false, true]) for (const chestReroll of [false, true]) {
@@ -373,14 +380,10 @@ test('navigation uses short native direction keys and releases them when paused'
   assert.deepEqual(C.townDirection({x:2,y:2},{x:0,y:0}),[]);
   const f=await browserFixture({repeat:true});
   try {
-    townMarkup(f); const d=f.w.document, down=[],up=[];
-    d.querySelector('#lobby-prompt').classList.add('hidden');
-    d.querySelector('#lobby-labels').innerHTML='<div class="lobby-name self">自己</div><div class="lobby-name npc">遠征隊長</div>';
-    d.querySelector('.self').getBoundingClientRect=()=>({left:400,width:60,bottom:400});
-    d.querySelector('.npc').getBoundingClientRect=()=>({left:600,width:60,bottom:300});
+    const town=nativeTownScenario(f,{player:{x:0,y:0},target:{x:600,y:-400}}),down=[],up=[];
     f.w.addEventListener('keydown',e=>down.push(e.key));f.w.addEventListener('keyup',e=>up.push(e.key));
     f.ui.querySelector('#mini').focus();
-    f.advance(1000); assert.deepEqual(down,['ArrowRight','ArrowUp']);
+    town.render();f.advance(1000); assert.deepEqual(down,['ArrowRight','ArrowUp']);
     f.ui.querySelector('#toggle').click(); assert.deepEqual(up,['ArrowRight','ArrowUp']);
   } finally {f.close();}
 });
@@ -1606,15 +1609,52 @@ test('natural single skill offer can be parked through native delegated action e
  }finally{f.close();}
 });
 
-test('repeat expedition leaves the screenshot nameplate dead zone, talks to captain and starts the selected stage once',async()=>{
- const f=await browserFixture({repeat:true,repeatDelay:1500});try{
-  townMarkup(f);const d=f.w.document;f.game.state='over';const prompt=d.querySelector('#lobby-prompt');prompt.classList.add('hidden');
-  d.querySelector('#lobby-labels').innerHTML='<div class="lobby-name self">自己</div><div class="lobby-name npc">遠征隊長</div>';
-  d.querySelector('.self').getBoundingClientRect=()=>({left:400,width:60,bottom:400});d.querySelector('.npc').getBoundingClientRect=()=>({left:400,width:60,bottom:355});
-  const downs=[],ups=[];let launched=0;f.w.addEventListener('keydown',e=>{downs.push(e.key);if(e.key==='ArrowDown')prompt.classList.remove('hidden')});f.w.addEventListener('keyup',e=>ups.push(e.key));
-  prompt.onclick=()=>{prompt.classList.add('hidden');d.querySelector('#stages').classList.remove('hidden');d.querySelector('#stg-list').innerHTML='<button class="stg-card sel" data-i="0"><span class="stg-card-info"><b>普隆德拉原野</b></span></button>'};
-  d.querySelector('#stg-go').onclick=()=>{launched++;d.querySelector('#stages').classList.add('hidden');d.querySelector('#lobby-ui').classList.add('hidden');d.body.classList.remove('in-lobby');f.hooks.start[0]({...f.game,state:'playing',stageId:'prontera',difficulty:{lap:1}})};
-  for(let i=0;i<10;i++)f.advance(1000);
-  assert(downs.includes('ArrowDown'));assert(ups.includes('ArrowDown'));assert.equal(launched,1);
+function nativeTownScenario(f,{player={x:0,y:0},target={x:650,y:300},yaw=0,pointer=false}={}){
+ const spec=require('./fixtures/native-town.json'),w=f.w,d=w.document;
+ townMarkup(f);f.game.state='over';f.camera.yaw=yaw;f.camera.targetYaw=yaw;
+ d.body.insertAdjacentHTML('beforeend','<div id="stage"><canvas></canvas></div>');const canvas=d.querySelector('#stage canvas');
+ canvas.getBoundingClientRect=()=>({left:0,top:0,width:1024,height:768});
+ d.querySelector('#lobby-prompt').classList.add('hidden');d.querySelector('#lobby-labels').innerHTML='<div class="lobby-name self">自己</div><div class="lobby-name npc">遠征隊長</div>';
+ // Deliberately misleading nameplates: the real character/NPC positions are elsewhere.
+ d.querySelector('.self').getBoundingClientRect=()=>({left:400,width:60,bottom:400});d.querySelector('.npc').getBoundingClientRect=()=>({left:400,width:60,bottom:355});
+ const counts={talk:0,launch:0,path:0},world=new f.World(),avatar={x:player.x,y:player.y,children:[{sheet:{}}]},npcView={...target,children:[{sheet:f.assets.sheets.get('npc_knight')}]},layer={children:[avatar,npcView]};
+ const town={player:{...player,update(){avatar.x=this.x;avatar.y=this.y}},classDef:{speed:180},keys:new Set(),touchMove:{x:0,y:0},cleanup:[],emotes:[],others:new Map(),npcs:[],pet:null,ambient:{update(){}},prompt:d.querySelector('#lobby-prompt'),near:null,world3d:world,
+  menuOpen(){return !!d.querySelector('.overlay:not(.hidden)')},inPlaza(x,y){return[x,y]},sendPosition(){},pickPlayer(){return false},closeMenu(){},closeChannels(){},zoomBy(){}};
+ const direction=w.eval(`(function(Ht){return ${spec.direction}})`)(f.camera);
+ town.tick=w.eval(`(function(Vd,Sd,gp,rt,ln){const Ze=false,c=text=>text;return ${spec.tick}})`)(direction,spec.speedMultiplier,spec.radius,{move:{x:0,y:0}},class Sprite{});
+ town.moveTo=w.eval(`(function(gp){return ${spec.moveTo}})`)(spec.radius);
+ const nativeMove=town.moveTo;town.moveTo=function(...args){counts.path++;return nativeMove.apply(this,args)};
+ town.npcs.push({x:target.x,y:target.y,view:npcView,action:'與隊長交談',onTalk(){counts.talk++;d.querySelector('#stages').classList.remove('hidden');d.querySelector('#stg-list').innerHTML='<button class="stg-card sel" data-i="0"><span class="stg-card-info"><b>普隆德拉原野</b></span></button>'}});
+ w.eval(`(function(Ie,Ze,Mw){return ${spec.bindInput}})`)(f.camera,false,null).call(town);
+ d.querySelector('#stg-go').onclick=()=>{counts.launch++;d.querySelector('#stages').classList.add('hidden');d.querySelector('#lobby-ui').classList.add('hidden');d.body.classList.remove('in-lobby');world.gone=true;f.hooks.start[0]({...f.game,state:'playing',stageId:'prontera',difficulty:{lap:1}})};
+ if(pointer){
+  w.PointerEvent=class extends w.MouseEvent{constructor(type,options){super(type,options);this.pointerType=options.pointerType}};
+  const Container=class{constructor(){this.children=[];this.position={set(){}}}addChild(x){this.children.push(x)}destroy(){}},Sprite=class{play(){}update(){}};
+  const Mouse=w.eval(`(function(g,Qe,ln,te){const fo=32,dE=.12,nn=()=>null;return ${spec.mouse}})`)((o,k,v)=>o[k]=v,Container,Sprite,{sheet:()=>({})});
+  town.mouse=new Mouse(canvas,world,new Container(),{moveTo(x,y){town.moveTo(x,y)},pick:()=>false,rotating:()=>false});
+ }
+ function render(){world.setView(town.player.x,town.player.y);world.render(layer)}
+ function frames(n){for(let i=0;i<n&&!counts.launch;i++){if(d.body.classList.contains('in-lobby')){town.tick(.02);render()}f.advance(20)}}
+ render();return{town,world,counts,render,frames,cleanup(){town.mouse?.destroy();for(const fn of town.cleanup)fn()}};
+}
+
+for(const yaw of [0,Math.PI/2,Math.PI,-Math.PI/3])test(`native lobby movement reaches captain and departs without relying on nameplate geometry; yaw=${yaw}`,async()=>{
+ const f=await browserFixture({repeat:true});let scene;try{
+  scene=nativeTownScenario(f,{yaw});scene.frames(600);
+  assert.equal(scene.counts.talk,1);assert.equal(scene.counts.launch,1);
+ }finally{scene?.cleanup();f.close();}
+});
+
+test('native click-to-move follows the actual captain coordinate and invokes native auto-talk',async()=>{
+ const f=await browserFixture({repeat:true});let scene;try{
+  scene=nativeTownScenario(f,{pointer:true,yaw:.7});scene.frames(600);
+  assert.equal(scene.counts.path,1);assert.equal(scene.counts.talk,1);assert.equal(scene.counts.launch,1);
+ }finally{scene?.cleanup();f.close();}
+});
+
+test('missing or stale native town scene stops navigation instead of repeating a guessed nameplate search',async()=>{
+ const f=await browserFixture({repeat:true});try{
+  townMarkup(f);f.w.document.querySelector('#lobby-prompt').classList.add('hidden');let keys=0;f.w.addEventListener('keydown',()=>keys++);
+  f.advance(2000);assert.equal(keys,0);assert.match(f.ui.querySelector('#status').textContent,/實際座標/);
  }finally{f.close();}
 });

@@ -1,0 +1,267 @@
+{
+  "retrieved": "2026-11-18",
+  "source": "https://ro.hans-webgametw.com/build/main-BNOcv2PN.hzcc4d908b.js",
+  "bundleSha256": "36f2d012ca584b5070aeff695f9ebd0d0ffa50585381948f0da82918b65827e9",
+  "jobSource": "https://ro.hans-webgametw.com/build/soul_linker-DllBVIRO.hza024a0d6.js",
+  "jobs": [
+    {
+      "id": "swordsman",
+      "name": "Swordsman",
+      "start": "bash"
+    },
+    {
+      "id": "mage",
+      "name": "Mage",
+      "start": "firebolt"
+    },
+    {
+      "id": "archer",
+      "name": "Archer",
+      "start": "double_strafe"
+    },
+    {
+      "id": "acolyte",
+      "name": "Acolyte",
+      "start": "heal"
+    },
+    {
+      "id": "thief",
+      "name": "Thief",
+      "start": "envenom"
+    },
+    {
+      "id": "merchant",
+      "name": "Merchant",
+      "start": "mammonite"
+    },
+    {
+      "id": "taekwon",
+      "name": "Taekwon",
+      "start": "tornado_kick"
+    },
+    {
+      "id": "ninja",
+      "name": "Ninja",
+      "start": "shuriken"
+    },
+    {
+      "id": "gunslinger",
+      "name": "Gunslinger",
+      "start": "triple_action"
+    },
+    {
+      "id": "knight",
+      "name": "Knight",
+      "start": "bash",
+      "base": "swordsman",
+      "rank": 2
+    },
+    {
+      "id": "crusader",
+      "name": "Crusader",
+      "start": "bash",
+      "base": "swordsman",
+      "rank": 2
+    },
+    {
+      "id": "wizard",
+      "name": "Wizard",
+      "start": "firebolt",
+      "base": "mage",
+      "rank": 2
+    },
+    {
+      "id": "sage",
+      "name": "Sage",
+      "start": "firebolt",
+      "base": "mage",
+      "rank": 2
+    },
+    {
+      "id": "hunter",
+      "name": "Hunter",
+      "start": "double_strafe",
+      "base": "archer",
+      "rank": 2
+    },
+    {
+      "id": "bard",
+      "name": "Bard",
+      "start": "double_strafe",
+      "base": "archer",
+      "rank": 2
+    },
+    {
+      "id": "priest",
+      "name": "Priest",
+      "start": "heal",
+      "base": "acolyte",
+      "rank": 2
+    },
+    {
+      "id": "monk",
+      "name": "Monk",
+      "start": "heal",
+      "base": "acolyte",
+      "rank": 2
+    },
+    {
+      "id": "assassin",
+      "name": "Assassin",
+      "start": "envenom",
+      "base": "thief",
+      "rank": 2
+    },
+    {
+      "id": "rogue",
+      "name": "Rogue",
+      "start": "envenom",
+      "base": "thief",
+      "rank": 2
+    },
+    {
+      "id": "blacksmith",
+      "name": "Blacksmith",
+      "start": "mammonite",
+      "base": "merchant",
+      "rank": 2
+    },
+    {
+      "id": "alchemist",
+      "name": "Alchemist",
+      "start": "mammonite",
+      "base": "merchant",
+      "rank": 2
+    },
+    {
+      "id": "star_gladiator",
+      "name": "Star Gladiator",
+      "start": "tornado_kick",
+      "base": "taekwon",
+      "rank": 2
+    },
+    {
+      "id": "soul_linker",
+      "name": "Soul Linker",
+      "start": "tornado_kick",
+      "base": "taekwon",
+      "rank": 2
+    },
+    {
+      "id": "arch_bishop",
+      "name": "Arch Bishop",
+      "start": "heal",
+      "base": "priest",
+      "rank": 3
+    },
+    {
+      "id": "genetic",
+      "name": "Genetic",
+      "start": "mammonite",
+      "base": "alchemist",
+      "rank": 3
+    },
+    {
+      "id": "guillotine_cross",
+      "name": "Guillotine Cross",
+      "start": "envenom",
+      "base": "assassin",
+      "rank": 3
+    },
+    {
+      "id": "kagerou",
+      "name": "Kagerou",
+      "start": "shuriken",
+      "base": "ninja",
+      "rank": 3
+    },
+    {
+      "id": "mechanic",
+      "name": "Mechanic",
+      "start": "mammonite",
+      "base": "blacksmith",
+      "rank": 3
+    },
+    {
+      "id": "minstrel",
+      "name": "Minstrel",
+      "start": "double_strafe",
+      "base": "bard",
+      "rank": 3
+    },
+    {
+      "id": "ranger",
+      "name": "Ranger",
+      "start": "double_strafe",
+      "base": "hunter",
+      "rank": 3
+    },
+    {
+      "id": "rebellion",
+      "name": "Rebellion",
+      "start": "triple_action",
+      "base": "gunslinger",
+      "rank": 3
+    },
+    {
+      "id": "royal_guard",
+      "name": "Royal Guard",
+      "start": "bash",
+      "base": "crusader",
+      "rank": 3
+    },
+    {
+      "id": "rune_knight",
+      "name": "Rune Knight",
+      "start": "bash",
+      "base": "knight",
+      "rank": 3
+    },
+    {
+      "id": "shadow_chaser",
+      "name": "Shadow Chaser",
+      "start": "envenom",
+      "base": "rogue",
+      "rank": 3
+    },
+    {
+      "id": "sorcerer",
+      "name": "Sorcerer",
+      "start": "firebolt",
+      "base": "sage",
+      "rank": 3
+    },
+    {
+      "id": "soul_reaper",
+      "name": "Soul Reaper",
+      "start": "tornado_kick",
+      "base": "soul_linker",
+      "rank": 3
+    },
+    {
+      "id": "star_emperor",
+      "name": "Star Emperor",
+      "start": "tornado_kick",
+      "base": "star_gladiator",
+      "rank": 3
+    },
+    {
+      "id": "sura",
+      "name": "Sura",
+      "start": "heal",
+      "base": "monk",
+      "rank": 3
+    },
+    {
+      "id": "warlock",
+      "name": "Warlock",
+      "start": "firebolt",
+      "base": "wizard",
+      "rank": 3
+    }
+  ],
+  "finish": "function Wi(a,e=!1){var h;if(!F||!mt)return;if(RO_PVP.wi(a,e))return;if(F.endless)return Kn?void 0:_I(a,e);e&&(ft==null||ft.abandon()),F.state=\"over\";let t=null;if(!Kn){Kn=!0,Yh(mt.id);const u=tt[F.stageId],p=!!mt.promotion;if(a&&F.promotion&&!p&&Ff(mt,F.promotion),a&&(u!=null&&u.story)){for(const y of F.storyLoot)Hf(mt,y.id);F.runLoot.push(...F.storyLoot)}t=Zh(mt,{time:F.time,level:F.level,kills:F.kills,bossKills:F.bossKills,mvps:F.mvpsKilled,stage:F.stageId,lap:RO_LAPOF(F),win:a,loot:F.runLoot,cards:F.runCards,eggs:F.runEggs,baseExp:F.charExp.base,jobExp:F.charExp.job,killsBy:Object.fromEntries(F.killsBy)})}const s=mt.id,n=F,o=mt,i=!a&&!!(ft!=null&&ft.leaderLeft),r=()=>{u1(n,a,t,o,()=>{Sr(),s===\"dev\"?ur():Ca(s)}),e?document.getElementById(\"go-title\").textContent=c(\"Partida abandonada\"):i&&(document.getElementById(\"go-title\").textContent=c(\"Partida terminada\"))},l=xe.findIndex(u=>u.id===n.stageId);a&&l>=0&&!xe[l].special&&!xe.slice(l+1).some(v=>v.map&&!v.special)?Ae(c(\"Continuará...\"),\"<p>\"+c(\"Has llegado al final de la aventura... por ahora.\")+\"</p><p>\"+c(\"Tu historia continuará muy pronto: los próximos stages llegarán en una nueva actualización.\")+\"</p>\",[{label:c(\"Aceptar\"),primary:!0,run:r}]):r()}",
+  "award": "function Zh(a,e){var l;const t=a.record;e.skipped||t.runs++,t.totalKills+=e.kills,t.bestTime=Math.max(t.bestTime,Math.floor(e.time)),t.bestLevel=Math.max(t.bestLevel,e.level),t.bestKills=Math.max(t.bestKills,e.kills),e.win&&!e.skipped&&t.wins++;const s=e.stage?tt[e.stage]:void 0;if(!(s!=null&&s.story)||s.storyOnly)for(const d of e.mvps??[])(a.mvpsDefeated??(a.mvpsDefeated=[])).includes(d)||a.mvpsDefeated.push(d);RO_LAPCLR(a,e,s);s&&((l=e.mvps)!=null&&l.includes(s.bosses[s.bosses.length-1].id))&&!(a.stagesCleared??(a.stagesCleared=[])).includes(e.stage)&&a.stagesCleared.push(e.stage);const n=Math.round(e.baseExp),o=a.level;[a.level,a.exp]=Zl(a.level,a.exp,n,Jo,oc);const i=Math.round(e.jobExp),r=a.jobLevel;[a.jobLevel,a.jobExp]=Zl(a.jobLevel,a.jobExp,i,ic,no(RO_TJ(a)));for(const d of e.loot)a.inventory.push({bag:a.id,...eu(d.id,Ih(d.id,d.quality)),quality:d.quality,affixes:d.affixes,ilvl:d.ilvl,tier:d.tier,...d.src?{src:d.src}:{},isNew:!0});for(const d of e.cards)a.cards[d]=(a.cards[d]??0)+1;return _a(a),HL(e.stage),e.skipped||(nA(a,e),MC(a.pet,e.time,e.eggs??[])),{exp:n,levelsGained:a.level-o,newLevel:a.level,statPoints:An(a.level)-An(o),jobExp:i,jobLevelsGained:a.jobLevel-r,newJobLevel:a.jobLevel,talentPoints:Pg(a.jobLevel)-Pg(r)}}",
+  "collect": "function(e,t){switch(e.kind){case\"meat\":this.healPlayer(e.value*this.stats.potionMult),O.play(\"heal\",.4);break;case\"magnet\":this.vacuum();break;case\"zeny\":this.zeny+=e.value,O.play(\"ef_coin\",.25,2);break;case\"loot\":{const s=Math.max(0,e.quality),n=this.itemLevel(),o=this.itemTier(),i=rc(s,o,e.ref,this.promotion??(this.look&&this.look.promotion)??this.classDef.id);qS(e.ref)||this.runLoot.push({id:e.ref,quality:s,affixes:i,ilvl:n,tier:o,...e.src?{src:e.src}:{}}),O.play(\"bs_refinesuccess\",.5),this.state=\"reveal\",this.events.onDrop({kind:\"gear\",id:e.ref,quality:s,affixes:i,tier:o,...t})}break;case\"card\":this.runCards.push(e.ref),O.play(\"bs_refinesuccess\",.5),this.state=\"reveal\",this.events.onDrop({kind:\"card\",id:e.ref,quality:Math.max(0,e.quality),affixes:[],...t});break;case\"egg\":this.runEggs.push(e.ref),O.play(\"bs_refinesuccess\",.5),this.state=\"reveal\",this.events.onDrop({kind:\"egg\",id:e.ref,quality:Math.max(0,e.quality),affixes:[],...t});break;default:this.gainExp(e.value)}}",
+  "endHandler": "()=>{ce(\"pause\"),Wi(!1,!0)}"
+}

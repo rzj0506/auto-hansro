@@ -1110,3 +1110,145 @@ test('nonresponsive native speed button is attempted once and does not stall aut
     assert.match(f.ui.querySelector('#speed-status').textContent, /已嘗試切換2x/);
   } finally { f.close(); }
 });
+
+test('job profiles migrate old mage setup and independently retain skills, chest priorities and globals',async()=>{
+  const f=await browserFixture({fourth:'soul_strike',priorities:{potion:'p_cd'},autoDoubleSpeed:true});let saved;
+  try{
+    const mage={...f.game,classDef:{id:'mage',name:'魔法師',start:'firebolt'},slots:['firebolt']};f.hooks.start[0](mage);
+    assert.equal(f.ui.querySelector('#job-profile').value,'mage');assert.match(f.ui.querySelector('[data-setting="fourth"]').value,/soul_strike/);
+    const sword={...f.game,classDef:{id:'swordsman',name:'劍士',start:'bash'},slots:['bash']};f.hooks.start[0](sword);
+    assert.equal(f.ui.querySelector('[data-setting="first"]').value,'');assert.equal(f.ui.querySelector('[data-priority="potion"]').value,'');
+    f.setting('first','bash');f.setting('fourth','magnum');f.setting('skillReroll',false);
+    const area=f.ui.querySelector('[data-priority="potion"]');area.value='p_hp';area.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+    f.hooks.start[0]({...mage});assert.match(f.ui.querySelector('[data-priority="potion"]').value,/p_cd/);assert.equal(f.ui.querySelector('[data-setting="skillReroll"]').checked,true);
+    f.hooks.start[0]({...sword});assert.equal(f.ui.querySelector('[data-setting="first"]').value,'bash');assert.match(f.ui.querySelector('[data-priority="potion"]').value,/p_hp/);
+    assert.equal(f.ui.querySelector('[data-setting="skillReroll"]').checked,false);assert.equal(f.ui.querySelector('[data-setting="autoDoubleSpeed"]').checked,true);
+    f.ui.querySelector('#export').click();saved=JSON.parse(f.ui.querySelector('#config').value);
+    assert.equal(saved.jobProfiles.shared.fourth,'soul_strike');assert.equal(saved.jobProfiles.mage.priorities.potion,'p_cd');
+  }finally{f.close();}
+  const r=await browserFixture(saved);try{assert.equal(r.ui.querySelector('#job-profile').value,'swordsman');assert.equal(r.ui.querySelector('[data-setting="first"]').value,'bash');}finally{r.close();}
+});
+
+test('promotions get separate profiles and manual profile editing pauses then resumes with current job',async()=>{
+  const f=await browserFixture();try{
+    f.w.document.body.insertAdjacentHTML('beforeend','<div id="hud"></div>');
+    const base={...f.game,classDef:{id:'mage',name:'魔法師',start:'firebolt'},slots:['firebolt']};f.hooks.start[0](base);f.setting('fourth','napalm');
+    const wizard={...base,look:{promotion:'wizard'},jobLabel:'巫師'};f.hooks.start[0](wizard);assert.equal(f.ui.querySelector('#job-profile').value,'wizard');
+    f.setting('fourth','soul_strike');const select=f.ui.querySelector('#job-profile');select.value='mage';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,false);assert.match(f.ui.querySelector('[data-setting="fourth"]').value,/napalm/);
+    f.ui.querySelector('#toggle').click();assert.equal(select.value,'wizard');assert.match(f.ui.querySelector('[data-setting="fourth"]').value,/soul_strike/);
+  }finally{f.close();}
+});
+
+test('actual non-mage skill picker accepts its job skill with blank generic targets',async()=>{
+  const f=await browserFixture();try{
+    const ns=await f.w.__testImport();ns.registry.bash={name:'狂擊'};ns.registry.magnum={name:'怒爆'};
+    const game={...f.game,classDef:{id:'swordsman',name:'劍士',start:'bash'},slots:['bash']};f.hooks.start[0](game);
+    const d=f.w.document,p=d.querySelector('#picker');p.classList.remove('hidden');d.querySelector('#pk-title').textContent='Level Up!';
+    d.querySelector('#pk-cards').innerHTML='<div class="pk-slot"><button class="pk-card"><span class="pk-name">怒爆</span><span class="pk-badge">技能</span><span class="pk-ribbon">新</span></button></div>';
+    let chosen=0;p.querySelector('.pk-card').onclick=()=>{chosen++;p.classList.add('hidden')};f.advance(100);f.advance(1100);assert.equal(chosen,1);
+  }finally{f.close();}
+});
+
+test('profile import/export retains all jobs and shared-copy changes only the selected profile',async()=>{
+  const f=await browserFixture({fourth:'napalm'});try{
+    f.hooks.start[0]({...f.game,classDef:{id:'swordsman',name:'劍士',start:'bash'}});f.setting('first','bash');
+    f.ui.querySelector('#copy-shared-profile').click();assert.equal(f.ui.querySelector('[data-setting="first"]').value,'firebolt');assert.match(f.ui.querySelector('[data-setting="fourth"]').value,/napalm/);
+    f.ui.querySelector('#export').click();const exported=JSON.parse(f.ui.querySelector('#config').value);assert.equal(exported.jobProfiles.shared.first,'firebolt');
+    f.ui.querySelector('#import').click();assert.equal(f.ui.querySelector('#job-profile').value,'swordsman');assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,false);
+  }finally{f.close();}
+});
+
+function timedRunScenario(f,game=f.game){
+  const fixture=require('./fixtures/native-job-run.json'),d=f.w.document;
+  if(!d.querySelector('#hud'))d.body.insertAdjacentHTML('beforeend','<div id="hud"></div>');
+  if(!d.querySelector('#gameover'))d.body.insertAdjacentHTML('beforeend','<div id="gameover" class="hidden"><div id="go-title"></div><button id="btn-restart">返回</button></div>');
+  if(!d.querySelector('#go-title'))d.querySelector('#gameover').insertAdjacentHTML('afterbegin','<div id="go-title"></div>');
+  if(!d.querySelector('#pause'))d.body.insertAdjacentHTML('beforeend','<div id="pause" class="hidden"><button id="btn-endrun" class="hidden">結束</button><button id="btn-quit">退出</button></div>');
+  if(!d.querySelector('#drop-reveal'))d.body.insertAdjacentHTML('beforeend','<div id="drop-reveal" class="hidden"></div>');
+  const report={game,saved:0,snapshotsCleared:0,settlements:[],records:[],claims:0,char:{id:'fixture',job:'mage',record:{runs:0,totalKills:0,bestTime:0,bestLevel:0,bestKills:0,wins:0},level:1,exp:0,jobLevel:1,jobExp:0,inventory:[],cards:{},mvpsDefeated:[],stagesCleared:[]}};
+  Object.assign(game,{state:'playing',stageId:'payon',difficulty:{lap:1},classDef:{id:'mage',name:'魔法師',start:'firebolt',speed:145},stats:{speedMult:1},buffValue:()=>0,chestCost:()=>10,zeny:100,
+    time:179.9,ticks:0,level:1,kills:0,bossKills:0,killsBy:new Map(),mvpsKilled:[],runLoot:[],runCards:[],runEggs:[],charExp:{base:0,job:0},pickups:[],moves:[],
+    moveTo(x,y){this.movePath=[{x,y}];this.moves.push({x,y})},events:{onDrop(item){
+      const r=d.querySelector('#drop-reveal');r.classList.remove('hidden');r.innerHTML=`<div class="dr-inner"><span class="dr-name">${item.kind}</span><button class="dr-get">領取</button></div>`;
+      r.querySelector('button').onclick=()=>{report.claims++;r.classList.add('hidden');game.state='playing'};
+    }}});
+  f.w.__timedReport=report;
+  f.w.eval(`(()=>{
+    const N=window.__timedReport;let F=N.game,mt=N.char,Kn=false,ft=null;
+    const RO_PVP={wi:()=>false},tt={payon:{bosses:[{id:'eddga'}]}},xe=[{id:'payon',map:'pay_fild08'}],RO_LAPOF=g=>g.difficulty.lap;
+    const Yh=()=>N.snapshotsCleared++,RO_LAPCLR=()=>{},Zl=(lv,exp,gain)=>[lv,exp+gain],Jo=()=>100,oc=99,ic=()=>100,no=()=>50,RO_TJ=a=>a.job,An=()=>0,Pg=()=>0;
+    const eu=id=>({uid:'fixture-'+id,itemId:id,cards:[]}),Ih=()=>0,_a=()=>N.saved++,HL=()=>{},nA=(a,run)=>N.records.push(run),MC=()=>{},Ff=()=>{};
+    const Sr=()=>{},Ca=()=>{},ur=()=>{},c=s=>s,Ae=()=>{},O={play(){}},u1=(g,win,reward,char,back)=>{N.settlements.push({win,cards:[...g.runCards],loot:[...g.runLoot]});document.querySelector('#gameover').classList.remove('hidden')};
+    const ce=id=>document.getElementById(id)?.classList.add('hidden');
+    ${fixture.award}
+    ${fixture.finish}
+    document.querySelector('#btn-endrun').onclick=${fixture.endHandler};
+    N.collect=${fixture.collect};
+  })()`);
+  let quit=0;d.querySelector('#btn-quit').onclick=()=>quit++;
+  f.hooks.tick[0](game);
+  function step(seconds){for(let i=0;i<Math.round(seconds*10);i++){
+    if(game.state==='playing'){
+      const goal=game.movePath?.[0];if(goal){const distance=Math.hypot(goal.x-game.player.x,goal.y-game.player.y),travel=Math.min(distance,145*1.3*.1);if(distance){game.player.x+=(goal.x-game.player.x)/distance*travel;game.player.y+=(goal.y-game.player.y)/distance*travel;}if(travel>=distance)game.movePath.shift();}
+      game.time+=.1;game.ticks++;
+      const item=game.pickups.find(p=>!p.dead&&Math.hypot(p.x-game.player.x,p.y-(game.player.y-20))<34);
+      if(item){if(item.kind==='card')report.collect.call(game,item);item.dead=true;}
+    }
+    f.advance(100);
+  }}
+  return {game,report,step,get quit(){return quit}};
+}
+
+test('three-minute native settlement collects ground card first and awards it once without saving a resumable run',async()=>{
+  const f=await browserFixture({timedExitEnabled:true,expedition:'payon',timedExitMinutes:3,cleanupSeconds:20,pickups:false,chests:false,dodge:false});try{
+    const s=timedRunScenario(f);s.game.pickups=[{kind:'card',ref:4001,quality:0,x:650,y:480,dead:false},{kind:'chest',x:400,y:480,dead:false}];
+    s.step(.3);s.game.pickups.push({kind:'card',ref:4003,quality:0,x:700,y:480,dead:false});
+    s.step(5);assert.equal(s.report.char.cards[4001],1);assert.equal(s.report.char.cards[4003],1);assert.equal(s.report.claims,2);assert.equal(s.report.saved,1);assert.equal(s.report.snapshotsCleared,1);assert.equal(s.quit,0);
+    assert.equal(s.report.settlements.length,1);assert.equal(s.report.settlements[0].win,false);assert.equal(s.report.records[0].win,false);
+    s.step(2);assert.equal(s.report.saved,1,'ending is not repeated');
+  }finally{f.close();}
+});
+
+test('cleanup deadline does not manufacture unreachable loot and preserves only already collected cards',async()=>{
+  const f=await browserFixture({timedExitEnabled:true,expedition:'payon',cleanupSeconds:1,pickups:false,chests:false,dodge:false});try{
+    const s=timedRunScenario(f);s.game.runCards=[4002];s.game.pickups=[{kind:'card',ref:4001,quality:0,x:6000,y:6000,dead:false}];s.step(2);
+    assert.equal(s.report.char.cards[4002],1);assert.equal(s.report.char.cards[4001],undefined);assert.match(f.ui.querySelector('#log').textContent,/仍有 1 件/);
+  }finally{f.close();}
+});
+
+test('timer waits for game time, manual pause and correct map; changing setting cancels pending cleanup',async()=>{
+  const f=await browserFixture({timedExitEnabled:true,expedition:'payon',cleanupSeconds:20});try{
+    const s=timedRunScenario(f);s.game.time=100;f.advance(600000);assert.equal(s.report.saved,0);
+    s.game.time=180;s.game.state='paused';f.advance(1000);assert.equal(s.report.saved,0);
+    s.game.state='playing';f.w.document.querySelector('#hud').classList.add('hidden');s.step(.2);assert.equal(s.report.saved,0);f.w.document.querySelector('#hud').classList.remove('hidden');
+    s.game.state='playing';s.game.stageId='maze';s.step(.2);assert.equal(s.report.saved,0);
+    s.game.stageId='payon';s.game.pickups=[{kind:'card',x:1800,y:1800,ref:4001,dead:false}];s.step(.1);f.setting('timedExitEnabled',false);s.step(25);assert.equal(s.report.saved,0);
+  }finally{f.close();}
+});
+
+test('tree-card preset selects one-lap Payon three-minute fixed loop and campaign remains exclusive',async()=>{
+  const f=await browserFixture({progression:true});try{
+    f.ui.querySelector('#tree-card-preset').click();let saved=JSON.parse(f.w.localStorage.getItem(STORAGE));
+    assert.equal(saved.expedition,'payon');assert.equal(saved.expeditionLap,1);assert.equal(saved.timedExitMinutes,3);assert.equal(saved.repeat,true);assert.equal(saved.progression,false);assert.equal(saved.pickups,true);
+    f.setting('progression',true);saved=JSON.parse(f.w.localStorage.getItem(STORAGE));assert.equal(saved.timedExitEnabled,false);
+    f.setting('timedExitEnabled',true);assert.equal(f.ui.querySelector('[data-setting="progression"]').checked,false);
+  }finally{f.close();}
+});
+
+test('timed loop starts a fresh run after native settlement and respects automatic run limit',async()=>{
+  const f=await browserFixture({repeat:true,repeatLimit:2,timedExitEnabled:true,expedition:'payon',cleanupSeconds:0});try{
+    const loop=expeditionScenario(f);loop.until(()=>loop.launches.length===1);
+    const first=timedRunScenario(f,loop.current);first.game.runCards=[4001];first.step(.3);assert.equal(first.report.saved,1);
+    loop.until(()=>loop.launches.length===2);const second=timedRunScenario(f,loop.current);second.game.runCards=[4001];second.step(.3);assert.equal(second.report.saved,1);
+    for(let i=0;i<15;i++)f.advance(1000);assert.equal(loop.launches.length,2);assert.equal(first.quit+second.quit,0);
+  }finally{f.close();}
+});
+
+test('timer cancels cleanup if game becomes a group run and never substitutes save-and-exit for missing settlement',async()=>{
+  const f=await browserFixture({timedExitEnabled:true,expedition:'payon',cleanupSeconds:20});try{
+    const s=timedRunScenario(f);s.game.pickups=[{kind:'card',ref:4001,x:1800,y:1800,dead:false}];s.step(.2);s.game.coop={};s.step(25);assert.equal(s.report.saved,0);
+    s.game.coop=null;f.setting('cleanupSeconds',0);f.w.document.querySelector('#btn-endrun').onclick=null;s.step(1);
+    assert.equal(s.report.saved,0);assert.equal(s.quit,0);assert.match(f.ui.querySelector('#log').textContent,/找不到原生結束結算/);
+  }finally{f.close();}
+});

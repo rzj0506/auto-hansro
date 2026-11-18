@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.13.1
+// @version      1.13.2
 // @description  按角色／寶箱總等級即選或保存、重複遠征導航修正、原生保存適配、指定神格及職業配置。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.13.1';
+  const VERSION = '1.13.2';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -1294,8 +1294,30 @@ self.onmessage = event => {
   }
   const NPC_NAMES = {
     vendor: /礦石商人|矿石商人|Vendedor de minerales|Ore Merchant|Ore vendor|Mercador de Minérios/i,
-    captain: /隊長|队长|captain|capitán|capitão/i,
+    captain: /隊長|队长|船長|船长|captain|capitán|capitão/i,
   };
+  function talkToNpc(kind, now) {
+    const prompt = $('#lobby-prompt');
+    if (!visible(prompt) || prompt.disabled || !NPC_NAMES[kind].test(prompt.textContent)) return false;
+    releaseTownKeys(); state.npcApproach = null;
+    const key = `npc:${kind}`;
+    if (state.flow?.key === key && state.flow.node === prompt) {
+      if (!state.flow.clicked && now-state.flow.at >= 700) {
+        state.flow.clicked = true;
+        prompt.click(); log('空白鍵後仍未切換，已點擊原生交談按鈕一次');
+      } else if (now-state.flow.at > 8000) log('交談後未切換畫面，等待遊戲響應；可按「重新識別」重試');
+      return true;
+    }
+    state.flow = { key, node:prompt, at:now, clicked:false };
+    state.townDispatch = true;
+    try {
+      // 使用原生 bindInput 的空白鍵交談入口，只在目標 NPC 提示出現時觸發。
+      window.dispatchEvent(new KeyboardEvent('keydown', { key:' ', code:'Space', keyCode:32, which:32, bubbles:true, cancelable:true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { key:' ', code:'Space', keyCode:32, which:32, bubbles:true }));
+    } finally { state.townDispatch = false; }
+    log(`按空白鍵與${kind === 'vendor' ? '礦石商人' : '遠征隊長'}交談`);
+    return true;
+  }
   function installTownBridge(namespace) {
     const camera = Object.values(namespace).find(value => value && typeof value === 'object' && Number.isFinite(value.yaw) && Number.isFinite(value.targetYaw) && Number.isFinite(value.zoom) && Number.isFinite(value.targetZoom));
     state.townCamera = camera || null;
@@ -1355,9 +1377,9 @@ self.onmessage = event => {
     if (state.townPulse !== null) { clearTimeout(state.townPulse); state.townPulse = null; }
   }
   function approachNpc(kind, now) {
-    const prompt = $('#lobby-prompt'), name = NPC_NAMES[kind];
-    if (visible(prompt) && name.test(prompt.textContent)) { releaseTownKeys(); state.npcApproach = null; return flowClick(prompt, `npc:${kind}`, now); }
     if (document.querySelector('.overlay:not(.hidden)') || now < state.manualUntil) { releaseTownKeys(); return false; }
+    if (talkToNpc(kind, now)) return true;
+    const prompt = $('#lobby-prompt');
     const scene = state.townScene, target = scene?.npcs[kind];
     if (!scene || scene.world.gone || now-scene.at > 1500 || !target) { releaseTownKeys(); log(`${state.townBridge}；等待${kind === 'vendor' ? '礦石商人' : '遠征隊長'}實際座標`); return false; }
     if (state.townKeys.length) return true;
@@ -1549,8 +1571,6 @@ self.onmessage = event => {
       return true;
     }
     if (visible($('#lobby-ui')) && document.body.classList.contains('in-lobby') && !visible($('#loading'))) {
-      const prompt = $('#lobby-prompt');
-      if (visible(prompt) && NPC_NAMES.captain.test(prompt.textContent)) return flowClick(prompt, 'captain', now);
       approachNpc('captain', now); return true;
     }
     return false;
@@ -2039,7 +2059,7 @@ self.onmessage = event => {
     ui.querySelector('#read-stages').onclick = () => {
       if (visible($('#stages'))) { readStages(); log('副本清單已更新'); return; }
       const prompt = $('#lobby-prompt');
-      if (visible(prompt) && /隊長|captain|capitán/i.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
+      if (visible(prompt) && NPC_NAMES.captain.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
       else log('請先到遠征隊長附近，或手動打開遠征清單後再讀取');
     };
     ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.npcApproach = null; state.expeditionProbe = null; state.farmPlan = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；新版已保存牌保留原重抽計數'); };

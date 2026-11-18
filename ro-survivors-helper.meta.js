@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.12.1
-// @description  適配新版技能／寶箱保存與分開開啟、指定神格、職業配置、死亡郵件、定時刷卡及六周目開荒。
+// @version      1.13.0
+// @description  按角色／寶箱總等級即選或保存、重複遠征導航修正、原生保存適配、指定神格及職業配置。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

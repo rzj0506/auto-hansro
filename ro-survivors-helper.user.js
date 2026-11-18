@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.13.0
+// @version      1.13.1
 // @description  按角色／寶箱總等級即選或保存、重複遠征導航修正、原生保存適配、指定神格及職業配置。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.13.0';
+  const VERSION = '1.13.1';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -367,12 +367,23 @@ self.onmessage = event => {
     const dx = target.x - player.x, dy = target.y - player.y;
     return [Math.abs(dx) > tolerance ? dx > 0 ? 'ArrowRight' : 'ArrowLeft' : '', Math.abs(dy) > tolerance ? dy > 0 ? 'ArrowDown' : 'ArrowUp' : ''].filter(Boolean);
   }
-  const NPC_OFFSETS = [[0,45],[0,75],[0,110],[0,150],[0,200],[45,110],[-45,110],[70,150],[-70,150],[0,260]];
-  function npcApproachPoint(target, player, attempt = 0) {
-    const [x, y] = NPC_OFFSETS[attempt % NPC_OFFSETS.length];
-    const goal = { x: target.left + target.width / 2 + x, y: target.bottom + y };
-    const self = { x: player.left + player.width / 2, y: player.bottom };
-    return { goal, self, keys: townDirection(goal, self, 6), distance: Math.hypot(goal.x - self.x, goal.y - self.y) };
+  function townWorldPlan(player, target, yaw) {
+    if (![player?.x,player?.y,target?.x,target?.y,yaw].every(Number.isFinite)) return null;
+    const dx = target.x - player.x, dy = target.y - player.y, distance = Math.hypot(dx,dy);
+    const x = dx * Math.cos(yaw) - dy * Math.sin(yaw), y = dx * Math.sin(yaw) + dy * Math.cos(yaw);
+    const limit = distance * .38;
+    const keys = distance < .5 ? [] : [Math.abs(x) > limit ? x > 0 ? 'ArrowRight' : 'ArrowLeft' : '', Math.abs(y) > limit ? y > 0 ? 'ArrowDown' : 'ArrowUp' : ''].filter(Boolean);
+    return { distance, keys, duration: distance < 220 ? 35 : distance < 500 ? 70 : 140 };
+  }
+  function townNpcPositions(layer, sheets) {
+    const positions = {};
+    for (const [kind,id] of [['captain','npc_knight'],['vendor','npc_vendor']]) {
+      const sheet = sheets?.get?.(id);
+      if (!sheet) continue;
+      const matches = (layer?.children || []).filter(view => view?.children?.some(sprite => sprite.sheet === sheet) && Number.isFinite(view.x) && Number.isFinite(view.y));
+      if (matches.length === 1) positions[kind] = { x:matches[0].x, y:matches[0].y };
+    }
+    return positions;
   }
   function sumSkillLevels(ids, read) {
     const unique = [...new Set(ids.filter(Boolean))];
@@ -553,7 +564,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, chestCardIdentity, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, chestTotalLevels, levelSavePolicy, npcApproachPoint, storedKindAllowed, storedCounts };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, chestCardIdentity, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, chestTotalLevels, levelSavePolicy, townWorldPlan, townNpcPositions, storedKindAllowed, storedCounts };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -578,6 +589,7 @@ self.onmessage = event => {
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
     panelDrag: null, suppressMiniClickUntil: 0,
     postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false, npcApproach: null, nativeDispatch: false,
+    townWorldViews: new WeakMap(), townWorldHooks: new WeakSet(), townScene: null, townCamera: null, townBridge: '等待原生廣場場景',
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
     profileJobs: {}, runJob: '', timedExit: null,
     deitySeen: new WeakMap(),
@@ -911,6 +923,7 @@ self.onmessage = event => {
       if (!hooks || !registry || !items) throw new Error('當前版本的資料結構與適配器不同');
       state.registry = registry; state.itemRegistry = items; state.hooks = hooks;
       state.assets = objects.find(v => v.icons instanceof Map && v.itemTextures instanceof Map) || null;
+      installTownBridge(ns);
       state.settings = objects.find(v => typeof v.autoPause === 'boolean' && typeof v.muteHidden === 'boolean' && typeof v.lang === 'string') || null;
       for (const value of Object.values(ns)) if (Array.isArray(value)) for (const job of value) {
         if (job && typeof job.id === 'string' && typeof job.name === 'string' && typeof job.start === 'string' && typeof job.speed === 'number') state.profileJobs[job.id] = job;
@@ -1283,6 +1296,59 @@ self.onmessage = event => {
     vendor: /礦石商人|矿石商人|Vendedor de minerales|Ore Merchant|Ore vendor|Mercador de Minérios/i,
     captain: /隊長|队长|captain|capitán|capitão/i,
   };
+  function installTownBridge(namespace) {
+    const camera = Object.values(namespace).find(value => value && typeof value === 'object' && Number.isFinite(value.yaw) && Number.isFinite(value.targetYaw) && Number.isFinite(value.zoom) && Number.isFinite(value.targetZoom));
+    state.townCamera = camera || null;
+    const World = Object.values(namespace).find(value => typeof value === 'function' && ['setView','render','project','pickGround','spriteLift'].every(key => typeof value.prototype?.[key] === 'function'));
+    if (!World || !state.assets?.sheets) { state.townBridge = '原生廣場座標適配器不可用；請刷新遊戲或查看診斷'; return; }
+    const proto = World.prototype;
+    if (state.townWorldHooks.has(proto)) return;
+    state.townWorldHooks.add(proto);
+    const setView = proto.setView, render = proto.render;
+    proto.setView = function (x,y,...args) {
+      const result = setView.call(this,x,y,...args);
+      if (Number.isFinite(x) && Number.isFinite(y)) state.townWorldViews.set(this,{x,y});
+      return result;
+    };
+    proto.render = function (layer,...args) {
+      const result = render.call(this,layer,...args);
+      // 只觀察原生渲染的玩家／NPC 座標；不改位置、鏡頭或原生尋路。
+      if (!this.gone && document.body.classList.contains('in-lobby') && visible($('#lobby-ui'))) {
+        try {
+          const player = state.townWorldViews.get(this), npcs = townNpcPositions(layer,state.assets?.sheets);
+          if (player && Object.keys(npcs).length) {
+            state.townScene = { world:this, layer, player:{...player}, npcs, at:performance.now() };
+            state.townBridge = '已連接原生廣場座標';
+          }
+        } catch { state.townBridge = '原生廣場座標讀取失敗，已停止自動接近'; }
+      }
+      return result;
+    };
+    state.townBridge = '等待廣場渲染座標';
+  }
+  function requestTownPath(scene,target) {
+    if (typeof PointerEvent !== 'function') return false;
+    const canvas = document.querySelector('#stage canvas:last-child');
+    if (!canvas || !visible(canvas)) return false;
+    const point = scene.world.project(target.x,target.y), back = scene.world.pickGround(point.x,point.y);
+    if (!back || Math.hypot(back.x-target.x,back.y-target.y) > 35) return false;
+    const bounds = canvas.getBoundingClientRect();
+    if (!(point.x >= 0 && point.y >= 0 && point.x < bounds.width && point.y < bounds.height)) return false;
+    // 擁擠時不點擊玩家，以免打開玩家選單；改用精確座標短按接近。
+    for (const view of scene.layer.children || []) {
+      if (!view?.children?.some(sprite => sprite.sheet) || !Number.isFinite(view.x) || !Number.isFinite(view.y)) continue;
+      const floor = scene.world.project(view.x,view.y), head = scene.world.project(view.x,view.y,scene.world.spriteLift(88));
+      const height = floor.y-head.y;
+      if (Math.hypot(view.x-target.x,view.y-target.y) > 1 && height > 0 && Math.abs(point.x-floor.x) < height*.4 && point.y > head.y && point.y < floor.y+height*.1) return false;
+    }
+    releaseTownKeys(); state.townDispatch = true;
+    try {
+      // 原生廣場通用的點按入口；桌面與觸控模式均由 bindInput 接到 pickGround／moveTo。
+      canvas.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'touch',button:0,buttons:1,clientX:point.x+bounds.left,clientY:point.y+bounds.top}));
+      window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'touch',button:0,buttons:0,clientX:point.x+bounds.left,clientY:point.y+bounds.top}));
+    } finally { state.townDispatch = false; }
+    return true;
+  }
   function releaseTownKeys() {
     for (const key of state.townKeys) window.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
     state.townKeys = [];
@@ -1292,26 +1358,26 @@ self.onmessage = event => {
     const prompt = $('#lobby-prompt'), name = NPC_NAMES[kind];
     if (visible(prompt) && name.test(prompt.textContent)) { releaseTownKeys(); state.npcApproach = null; return flowClick(prompt, `npc:${kind}`, now); }
     if (document.querySelector('.overlay:not(.hidden)') || now < state.manualUntil) { releaseTownKeys(); return false; }
-    const target = [...document.querySelectorAll('#lobby-labels .lobby-name.npc')].find(el => name.test(el.textContent));
-    const self = $('#lobby-labels .lobby-name.self');
-    if (!target || !self) { log(`等待${kind === 'vendor' ? '礦石商人' : '遠征隊長'}位置；請走近該 NPC`); return false; }
+    const scene = state.townScene, target = scene?.npcs[kind];
+    if (!scene || scene.world.gone || now-scene.at > 1500 || !target) { releaseTownKeys(); log(`${state.townBridge}；等待${kind === 'vendor' ? '礦石商人' : '遠征隊長'}實際座標`); return false; }
     if (state.townKeys.length) return true;
-    const a = target.getBoundingClientRect(), b = self.getBoundingClientRect();
-    if (!state.npcApproach || state.npcApproach.target !== target || state.npcApproach.kind !== kind) state.npcApproach = { target, kind, attempt: 0, distance: Infinity, stuck: 0 };
+    const yaw = state.townCamera?.yaw;
+    if (!state.npcApproach || state.npcApproach.world !== scene.world || state.npcApproach.kind !== kind) state.npcApproach = { world:scene.world, kind, distance:Infinity, pathAt:-Infinity, progressAt:now };
     const route = state.npcApproach;
-    let step = npcApproachPoint(a, b, route.attempt);
-    route.stuck = Number.isFinite(route.distance) && Math.abs(step.distance - route.distance) < .5 ? route.stuck + 1 : 0;
-    // 名牌會隨 3D 鏡頭、縮放及避讓位移；沒有原生交談提示就不能視為到達。
-    if (!step.keys.length || route.stuck >= 4) { route.attempt++; route.stuck = 0; step = npcApproachPoint(a, b, route.attempt); }
+    const step = townWorldPlan(scene.player,target,yaw);
+    if (!step) { releaseTownKeys(); log('等待原生廣場鏡頭方向，停止猜測移動'); return false; }
+    if (step.distance < route.distance-1) route.progressAt = now;
     route.distance = step.distance;
+    if (now-route.pathAt < 6000 && now-route.progressAt < 1200) { log(`原生尋路接近${kind === 'vendor' ? '商人' : '隊長'}，實際距離 ${Math.round(step.distance)}`); return true; }
+    if (step.distance > 220 && now-route.pathAt > 6000 && requestTownPath(scene,target)) { route.pathAt = now; route.progressAt = now; return true; }
     const keys = step.keys;
-    if (!keys.length) return true;
+    if (!keys.length) { log(`已到目標座標，等待原生交談提示：${prompt?.textContent || '尚無提示'}`); return false; }
     state.townKeys = keys;
     state.townDispatch = true;
     try { for (const key of keys) window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); }
     finally { state.townDispatch = false; }
-    state.townPulse = setTimeout(releaseTownKeys, 180);
-    log(`正在接近${kind === 'vendor' ? '礦石商人' : '遠征隊長'}，尋找原生交談範圍`);
+    state.townPulse = setTimeout(releaseTownKeys, step.duration);
+    log(`按原生座標接近${kind === 'vendor' ? '礦石商人' : '遠征隊長'}，實際距離 ${Math.round(step.distance)}`);
     return true;
   }
   function postRunStep(now) {
@@ -1982,6 +2048,8 @@ self.onmessage = event => {
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), levelSaving: { levels: readSavingLevels(), skillEnabled: cfg.skillLevelGate, skillAt: cfg.skillSaveAtLevel, chestEnabled: cfg.chestLevelGate, chestAt: cfg.chestSaveAtTotal }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         deity: { overrideEnabled: cfg.deityOverrideEnabled, overrides: cfg.deityOverrides, banishAfterPick: cfg.deityBanishAfterPick, banishTargets: cfg.deityBanishTargets, acquired: [...rememberDeity(g)] },
         stored: { mode: cfg.storedOpenMode, supported: !!nativeSaveApi(), skillSaving: nativeSaveApi()?.prefLv(), chestSaving: nativeSaveApi()?.prefCh(), counts: storedCounts(g, picker && pickerKind(picker)), batch: state.savedBatch?.mode, manualHold: state.savedHold },
+        town: { bridge:state.townBridge, sceneAge:state.townScene ? Math.round(performance.now()-state.townScene.at) : null, yaw:state.townCamera?.yaw,
+          player:state.townScene?.player, npcs:state.townScene?.npcs, target:state.npcApproach?.kind, distance:state.npcApproach?.distance },
         email: { enabled: cfg.deathMailEnabled, configured: !mailSettingsError(mailSettings), queued: state.mailQueue.length, sending: state.mailBusy, accepted: state.mailAccepted, status: state.mailStatus },
         profile: { job: cfg.profileJob, gameJob: gameJobId(g), saved: Object.keys(cfg.jobProfiles) },
         timedExit: { enabled: cfg.timedExitEnabled, minutes: cfg.timedExitMinutes, cleanupSeconds: cfg.cleanupSeconds, phase: state.timedExit?.stage, pending: state.timedExit ? [...state.timedExit.items].filter(item => !item.dead).length : 0 },

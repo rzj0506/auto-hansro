@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.11.0
-// @description  指定神格覆蓋與選後放逐、遠征死亡郵件、職業配置、定時刷卡、原生2倍速及六周目開荒。
+// @version      1.12.0
+// @description  適配新版技能／寶箱保存與分開開啟、指定神格、職業配置、死亡郵件、定時刷卡及六周目開荒。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.11.0';
+  const VERSION = '1.12.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -45,6 +45,7 @@
     first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     profileJob: '', jobProfiles: {},
     chestFillFirst: true, chestSmartReroll: true, noFlipEnabled: false, noFlipMinutes: 10,
+    storedOpenMode: 'manual',
     deityOverrideEnabled: false, deityOverrides: '', deityBanishAfterPick: false, deityBanishTargets: '',
     noFlipLevelEnabled: false, noFlipTotalLevel: 100,
     autoEquip: false, autoSell: false, sellQualities: [], expeditionLap: 1,
@@ -59,7 +60,7 @@
   };
   const PROFILE_KEYS = ['first', 'second', 'third', 'fourth', 'fifth', 'skillSlots', 'skills', 'rarityFirst', 'skillReroll',
     'banish', 'banishBasic', 'banishExcludeEnabled', 'banishExclude', 'noFlipEnabled', 'noFlipMinutes', 'noFlipLevelEnabled', 'noFlipTotalLevel',
-    'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'priorities', 'deityOverrideEnabled', 'deityOverrides', 'deityBanishAfterPick', 'deityBanishTargets', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
+    'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'storedOpenMode', 'priorities', 'deityOverrideEnabled', 'deityOverrides', 'deityBanishAfterPick', 'deityBanishTargets', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
   const profileSettings = config => Object.fromEntries(PROFILE_KEYS.map(key => [key, JSON.parse(JSON.stringify(config[key]))]));
   const gameJobId = game => {
     const id = game?.promotion || game?.look?.promotion || game?.classDef?.id;
@@ -371,6 +372,13 @@ self.onmessage = event => {
   const noFlipDue = (game, config, totalLevel = totalSkillLevels(game)) => !!(['playing', 'levelup'].includes(game?.state)
     && (config.noFlipEnabled && Number.isFinite(game?.time) && game.time >= config.noFlipMinutes * 60
       || config.noFlipLevelEnabled && Number.isFinite(totalLevel) && totalLevel >= config.noFlipTotalLevel));
+  const storedKindAllowed = (kind, config, mode = config.storedOpenMode, skillSaved = false) =>
+    kind === 'skill' ? !!(config.skills && !skillSaved && ['skills', 'both'].includes(mode)) :
+      kind === 'chest' && !!(config.chests && ['chests', 'both'].includes(mode));
+  function storedCounts(game, currentKind = '') {
+    return { skill: Math.max(0, Math.floor(Number(game?.pendingLevelUps) || 0)),
+      chest: Math.max(0, Math.floor(Number(game?.roChests) || 0)) + (game?.roChestKeep ? 1 : 0) + (game?.state === 'levelup' && currentKind === 'chest' ? 1 : 0) };
+  }
   function validateConfig(raw, includeProfiles = true) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
@@ -388,6 +396,7 @@ self.onmessage = event => {
     if (typeof raw.expedition === 'string') out.expedition = raw.expedition.slice(0, 150);
     if (Array.isArray(raw.banishExclude)) out.banishExclude = [...new Set(raw.banishExclude.filter(v => typeof v === 'string' && /^[\w.-]{1,100}$/.test(v)))].slice(0, 500);
     if (['greed', 'need', 'pass', 'manual'].includes(raw.partyRoll)) out.partyRoll = raw.partyRoll;
+    if (['manual', 'skills', 'chests', 'both'].includes(raw.storedOpenMode)) out.storedOpenMode = raw.storedOpenMode;
     if (['card-deck', 'deck-card', 'card', 'deck', 'off'].includes(raw.rerollMode)) out.rerollMode = raw.rerollMode;
     if (['best', 'wait'].includes(raw.exhausted)) out.exhausted = raw.exhausted;
     for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
@@ -505,7 +514,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, noFlipDue, storedKindAllowed, storedCounts };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -533,6 +542,7 @@ self.onmessage = event => {
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
     profileJobs: {}, runJob: '', timedExit: null,
     deitySeen: new WeakMap(),
+    offerBooks: new WeakMap(), activeOffer: null, savedBatch: null, savedHold: false, savedOpenAt: -Infinity,
     mailSeen: new WeakSet(), mailQueue: [], mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
   };
   let root, panel, ui, interval, attachTimer;
@@ -611,7 +621,7 @@ self.onmessage = event => {
     const ids = [...new Set(['shared', ...Object.keys(state.profileJobs), ...Object.keys(cfg.jobProfiles)])];
     select.innerHTML = ids.map(id => `<option value="${esc(id)}">${esc(id === 'shared' ? '舊版共用備份' : state.profileJobs[id]?.name || cfg.jobProfiles[id]?.label || id)}${id === 'shared' ? '' : ` [${esc(id)}]`}</option>`).join('');
     select.value = cfg.profileJob || 'shared';
-    ui.querySelector('#profile-status').textContent = `正在編輯：${select.selectedOptions[0]?.textContent || cfg.profileJob}。技能、寶箱及相關重抽／放逐／停翻牌設定分職業保存。`;
+    ui.querySelector('#profile-status').textContent = `正在編輯：${select.selectedOptions[0]?.textContent || cfg.profileJob}。技能、寶箱及重抽／放逐／保存觸發條件與自動開啟範圍分職業保存。`;
   }
   function switchProfile(id, definition = {}) {
     save();
@@ -621,7 +631,7 @@ self.onmessage = event => {
     }
     const profile = cfg.jobProfiles[id || 'shared'];
     cfg = validateConfig({ ...cfg, ...profileSettings(profile), profileJob: id });
-    save(); resetPicker(); state.noFlipDone = false; populate();
+    save(); resetPicker(); state.noFlipDone = false; state.savedBatch = null; state.savedHold = false; populate();
   }
   function syncProfile(game) {
     const id = gameJobId(game); if (!id) return;
@@ -815,6 +825,7 @@ self.onmessage = event => {
     if (!g?.player || typeof g.moveTo !== 'function' || !Array.isArray(g.enemies)) return;
     maybeQueueDeath(g);
     rememberDeity(g);
+    observeOffers(g);
     const job = gameJobId(g);
     if (job && (state.game !== g || state.runJob !== job)) { state.runJob = job; syncProfile(g); }
     if (state.game === g) return;
@@ -823,7 +834,7 @@ self.onmessage = event => {
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
     state.expeditionProbe = null; state.farmPlan = null;
     resetAutoSpeed();
-    state.timedExit = null;
+    state.timedExit = null; state.savedBatch = null; state.savedHold = false; state.savedOpenAt = -Infinity;
     state.noFlipDone = false; state.postRun = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -899,13 +910,99 @@ self.onmessage = event => {
     return [...picker.querySelectorAll('#pk-bar .pk-act')].find(b => /重抽|reroll/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
   }
   function pickerKind(picker) {
+    const native = nativeSaveApi();
+    if (native?.g === state.game && state.game?.state === 'levelup') {
+      if (native.curT === 'chest') return 'chest';
+      if (native.curT === 'lv') return 'skill';
+    }
     const title = text(picker, '#pk-title');
     if (/寶箱|宝箱|treasure chest|cofre del tesoro/i.test(title)) return 'chest';
     if (/升級|升级|level\s*up/i.test(title)) return 'skill';
     return '';
   }
   function resetPicker() {
-    state.pickerNode = null; state.pickerType = ''; state.chestToken = null; state.pending = null; state.used = 0; state.skillUsed = 0;
+    state.pickerNode = null; state.pickerType = ''; state.chestToken = null; state.pending = null; state.used = 0; state.skillUsed = 0; state.activeOffer = null;
+  }
+  function observeOffers(game) {
+    if (state.offerBooks.has(game)) return;
+    const book = { cards: new WeakMap(), active: null };
+    state.offerBooks.set(game, book);
+    // 觀察原生新一輪事件；重抽重繪不經過這裡，保存後拿出同一組牌也沿用其計數。
+    for (const [event, kind] of [['onLevelUp', 'skill'], ['onChest', 'chest']]) {
+      const original = game.events?.[event];
+      if (typeof original !== 'function') continue;
+      game.events[event] = function (cards, ...args) {
+        if (Array.isArray(cards)) {
+          let offer = book.cards.get(cards);
+          if (!offer) { offer = { kind, used: 0, skillUsed: 0 }; book.cards.set(cards, offer); }
+          book.active = offer;
+        }
+        return original.call(this, cards, ...args);
+      };
+    }
+  }
+  function currentOffer(kind) {
+    const g = state.game, native = nativeSaveApi(), book = g && state.offerBooks.get(g);
+    if (!book || native?.g !== g || !Array.isArray(native.curK)) return null;
+    let offer = book.cards.get(native.curK);
+    if (!offer) {
+      offer = book.active?.kind === kind ? book.active : { kind, used: 0, skillUsed: 0 };
+      book.cards.set(native.curK, offer);
+    }
+    book.active = offer; return offer;
+  }
+  function rememberOfferRedraw(kind) {
+    const native = nativeSaveApi(), book = state.game && state.offerBooks.get(state.game);
+    if (state.activeOffer?.kind === kind && book?.active === state.activeOffer && native?.g === state.game && Array.isArray(native.curK)) book.cards.set(native.curK, state.activeOffer);
+  }
+  function nativeSaveApi() {
+    const native = window.RO_SAVEUP;
+    return native && ['ok', 'prefLv', 'prefCh', 'setLv', 'setCh', 'openLv', 'openChest', 'keep', 'sync'].every(key => typeof native[key] === 'function') ? native : null;
+  }
+  function saveGameReady(native = nativeSaveApi()) {
+    const g = state.game;
+    return !!(native && g && native.g === g && native.ok(g) && !g.coop && !g.replayMoves && !g.player?.dead && g.lootUntil < 0
+      && ['playing', 'levelup'].includes(g.state) && !window.RO_DEAD && !$('#ro-tab-dead'));
+  }
+  function setNativeSave(kind, value) {
+    const native = nativeSaveApi();
+    if (!native) return false;
+    const input = $(kind === 'chest' ? '#sv-check-ch' : '#sv-check');
+    if (input && !input.disabled) { input.checked = value; input.dispatchEvent(new Event('change', { bubbles: true })); }
+    else { (kind === 'chest' ? native.setCh : native.setLv)(value); if (native.g) native.g.roOpening = false; native.sync(); }
+    return (kind === 'chest' ? native.prefCh() : native.prefLv()) === value;
+  }
+  function openStored(kind, manual = false) {
+    const native = nativeSaveApi(), g = state.game;
+    if (!saveGameReady(native) || g.state !== 'playing' || visible($('#picker')) || visible($('#drop-reveal'))) return false;
+    if (!storedCounts(g)[kind]) return false;
+    const mode = manual ? (kind === 'skill' ? 'skills' : 'chests') : cfg.storedOpenMode;
+    // 與原生 HUD 開啟相同的 UI 狀態；只呼叫所選類型的原生入口，不自行抽牌。
+    g.roOpening = true; state.savedBatch = { game: g, mode, manual }; state.savedHold = false;
+    const opened = kind === 'skill' ? native.openLv(g) : native.openChest(g);
+    if (!opened) { g.roOpening = false; state.savedBatch = null; }
+    native.sync(); state.savedOpenAt = performance.now();
+    if (opened) log(`開啟已保存${kind === 'skill' ? '技能牌' : '寶箱'}；沿用原選牌與重抽配置`);
+    return opened;
+  }
+  function storedStep(now) {
+    const native = nativeSaveApi(), g = state.game;
+    if (!saveGameReady(native)) { state.savedBatch = null; return false; }
+    const savedSkill = state.noFlipDone && (cfg.noFlipEnabled || cfg.noFlipLevelEnabled);
+    const batch = state.savedBatch;
+    if (g.state === 'levelup' && batch?.game === g && visible($('#picker'))) {
+      if ($('#picker').classList.contains('closing')) return false;
+      const kind = pickerKind($('#picker'));
+      if (kind && !storedKindAllowed(kind, cfg, batch.mode, savedSkill && !batch.manual)) {
+        native.keep(); state.savedBatch = null; resetPicker(); log(`此輪不自動選${kind === 'skill' ? '技能牌' : '寶箱'}，已繼續保存`); return true;
+      }
+      return false;
+    }
+    if (g.state !== 'playing' || visible($('#picker')) || state.savedHold || now - state.savedOpenAt < cfg.delay) return false;
+    state.savedBatch = null;
+    const counts = storedCounts(g);
+    const kind = ['skill', 'chest'].find(type => counts[type] && storedKindAllowed(type, cfg, cfg.storedOpenMode, savedSkill));
+    return kind ? openStored(kind) : false;
   }
   function ownedChestSlots() {
     const slots = state.game?.runItems?.slots;
@@ -956,6 +1053,17 @@ self.onmessage = event => {
     if (state.noFlipDone || !cfg.noFlipEnabled && !cfg.noFlipLevelEnabled) return;
     const total = cfg.noFlipLevelEnabled ? readTotalSkillLevel() : null;
     if (!noFlipDue(state.game, cfg, total)) return;
+    const native = nativeSaveApi();
+    if (native) {
+      if (!saveGameReady(native) || !native.prefLv() && !setNativeSave('skill', true)) return;
+      if (state.game.state === 'levelup' && native.curT === 'lv' && visible($('#picker'))) {
+        if ($('#picker').classList.contains('closing')) return;
+        native.keep(); state.savedBatch = null; resetPicker();
+      }
+      state.noFlipDone = true;
+      log(`已達${cfg.noFlipEnabled && state.game.time >= cfg.noFlipMinutes * 60 ? `局內 ${cfg.noFlipMinutes} 分鐘` : `技能總等級 ${total}/${cfg.noFlipTotalLevel}（含普攻）`}，已開啟原生「保存升級選卡」；不再自動拿出技能牌，寶箱沿用設定`);
+      return;
+    }
     if (state.game.roNoFlip) { state.noFlipDone = true; return; }
     const check = $('#nf-check'), button = $('#nf-btn');
     if (check && !check.disabled && check.checked) {
@@ -975,8 +1083,10 @@ self.onmessage = event => {
     const kind = pickerKind(picker);
     if (!kind || kind === 'skill' && !cfg.skills || kind === 'chest' && !cfg.chests) return;
     const chestToken = kind === 'chest' ? state.game?.openingChest || null : null;
-    if (state.pickerType !== kind || chestToken && chestToken !== state.chestToken) {
+    const offer = currentOffer(kind);
+    if (state.pickerType !== kind || offer && offer !== state.activeOffer || chestToken && chestToken !== state.chestToken) {
       resetPicker(); state.pickerType = kind;
+      state.activeOffer = offer; state.used = offer?.used || 0; state.skillUsed = offer?.skillUsed || 0;
     }
     state.chestToken = chestToken;
     const buttons = [...picker.querySelectorAll('#pk-cards .pk-card')];
@@ -1001,7 +1111,7 @@ self.onmessage = event => {
       const banished = banishCandidate(cards, owned, cfg, basic);
       if (banished) {
         state.pending = { type: 'banish', at: now };
-        banished.banish.click(); log(`放逐${banished.id === basic ? '普攻' : '已擁有技能'}：${banished.name}；本局不再出現其升級`); return;
+        banished.banish.click(); rememberOfferRedraw(kind); log(`放逐${banished.id === basic ? '普攻' : '已擁有技能'}：${banished.name}；本局不再出現其升級`); return;
       }
       const limit = Math.min(cfg.skillSlots, state.game?.maxSkills || cfg.skillSlots);
       const selected = chooseSkill(cards, owned, { ...cfg, skillSlots: limit }, state.registry);
@@ -1009,7 +1119,8 @@ self.onmessage = event => {
       const deck = deckButton(picker);
       const left = state.game?.perksLeft?.reroll ?? Number(text(deck, 'small') || 0);
       if (cfg.skillReroll && deck && state.skillUsed < cfg.maxRerolls && (left === undefined || left > cfg.reserveDeck)) {
-        state.skillUsed++; state.pending = { type: 'deck', at: now }; deck.click(); log(`技能牌沒有符合 ${limit} 技配置的選項，重抽整組`); return;
+        state.skillUsed++; if (state.activeOffer) state.activeOffer.skillUsed = state.skillUsed;
+        state.pending = { type: 'deck', at: now }; deck.click(); rememberOfferRedraw(kind); log(`技能牌沒有符合 ${limit} 技配置的選項，重抽整組`); return;
       }
       log(`技能牌沒有符合 ${limit} 技配置的選項；等待手動選擇`); return;
     }
@@ -1021,12 +1132,13 @@ self.onmessage = event => {
     if (result.type === 'wait') { log(result.reason); return; }
     if (result.type === 'banish') {
       if (!result.card.banish?.isConnected || result.card.banish.disabled) return;
-      state.pending = { type: 'banish', at: now }; result.card.banish.click(); log(`放逐寶箱神格：${result.card.name}；${result.reason}`); return;
+      state.pending = { type: 'banish', at: now }; result.card.banish.click(); rememberOfferRedraw(kind); log(`放逐寶箱神格：${result.card.name}；${result.reason}`); return;
     }
     const button = result.type === 'card' ? result.card.reroll : deck;
     if (!button || button.disabled) return;
-    state.used++; state.pending = { type: result.type, at: now };
-    button.click(); log(`${result.reason}；${result.type === 'card' ? '重抽單張：' + result.card.name : '重抽整組'}（本箱 ${state.used}/${cfg.maxRerolls}）`);
+    state.used++; if (state.activeOffer) state.activeOffer.used = state.used;
+    state.pending = { type: result.type, at: now };
+    button.click(); rememberOfferRedraw(kind); log(`${result.reason}；${result.type === 'card' ? '重抽單張：' + result.card.name : '重抽整組'}（本箱 ${state.used}/${cfg.maxRerolls}）`);
   }
   function pick(card, now, reason = '') {
     if (!card.button.isConnected || card.button.disabled) return;
@@ -1432,6 +1544,7 @@ self.onmessage = event => {
       timedNoFlip();
       if (postRunStep(now)) return;
       if (repeatStep(now)) return;
+      if (storedStep(now)) return;
       if (visible($('#picker'))) actPicker(now);
       else { resetPicker(); movement(now); }
       state.errorCount = 0;
@@ -1458,6 +1571,16 @@ self.onmessage = event => {
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '自動遠征已啟用' : '自動遠征已關閉'} · ${cfg.progression ? '首通開荒' : '固定副本'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}${cfg.progression ? `\n${state.progressionStatus}` : ''}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
     renderMailStatus();
+    const native = nativeSaveApi();
+    for (const input of ui.querySelectorAll('[data-native-save]')) {
+      input.disabled = !native; input.checked = !!native && (input.dataset.nativeSave === 'chest' ? native.prefCh() : native.prefLv());
+    }
+    const saved = storedCounts(g, native?.g === g ? native.curT === 'chest' ? 'chest' : 'skill' : '');
+    ui.querySelector('#stored-status').textContent = !native ? '等待新版保存功能初始化；已打開的牌仍按原配置處理' :
+      `技能待選 ${saved.skill} · 寶箱待選 ${saved.chest}${state.savedHold ? ' · 手動保存中，按開啟或切換範圍恢復自動' : ''}${state.noFlipDone && (cfg.noFlipEnabled || cfg.noFlipLevelEnabled) ? ' · 本局已達保存技能條件' : ''}`;
+    ui.querySelector('#stored-skill').disabled = !saveGameReady(native) || g.state !== 'playing' || !saved.skill;
+    ui.querySelector('#stored-chest').disabled = !saveGameReady(native) || g.state !== 'playing' || !saved.chest;
+    ui.querySelector('#stored-keep').disabled = !saveGameReady(native) || g.state !== 'levelup' || !['lv', 'chest'].includes(native.curT);
     ui.querySelector('#timed-exit-status').textContent = !cfg.timedExitEnabled ? '定時刷卡未啟用' : state.timedExit
       ? `定時刷卡：${g?.state === 'over' ? '本局已結束，等待下一場' : state.timedExit.stage === 'collect' ? '收尾拾取中' : '等待原生結算'}` : `只在第 ${cfg.expeditionLap} 周目 ${cfg.expedition} 生效，局內 ${cfg.timedExitMinutes} 分鐘開始收尾`;
     ui.querySelector('#speed-status').textContent = !cfg.autoDoubleSpeed ? '自動2x未啟用' : state.speedApplied && g?.roSpd === 1
@@ -1575,12 +1698,17 @@ self.onmessage = event => {
       <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
       <small>兩個開關獨立生效。技能僅在沒有合規選項時重抽整組，關閉後等待手動選擇；寶箱關閉後按現有牌優先級與下方處理方式選擇或等待。沿用下方重抽上限與保留次數。</small>
       </details>
-      <details><summary>之後不再翻牌觸發條件</summary>
-      <label><input data-setting="noFlipEnabled" type="checkbox"> 按局內時間啟用「之後不再翻牌」</label>
+      <details open><summary>新版技能／寶箱保存與開啟</summary>
+      <div class="checkrow"><label><input data-native-save="skill" type="checkbox"> 遊戲：保存升級選卡</label><label><input data-native-save="chest" type="checkbox"> 遊戲：保存寶箱</label></div>
+      <label>已保存牌的自動開啟範圍<select data-setting="storedOpenMode"><option value="manual">手動開啟（只處理已打開的牌）</option><option value="skills">僅自動開技能牌</option><option value="chests">僅自動開寶箱</option><option value="both">技能牌＋寶箱</option></select></label>
+      <div class="buttons"><button id="stored-skill">立即開技能牌</button><button id="stored-chest">立即開寶箱</button><button id="stored-keep">繼續保存目前牌</button></div>
+      <small id="stored-status"></small><br><small>保存開關與遊戲暫停選單同步，技能牌和寶箱分別保存、不丟棄。自動開啟仍需啟動助手並開啟該類自動選牌；預設由你手動開啟。只開一種時，原生連選若轉到另一種，助手會將其繼續保存。手動按「繼續保存」會暫緩本局自動開啟，按開啟／B 鍵或切換範圍可恢復；原生分頁可自由切換。面板按鈕先開所選類型，助手運行時限制連選範圍。保存偏好由遊戲全局保存，自動範圍隨職業保存。</small></details>
+      <details><summary>達到條件後保存技能牌（原不再翻牌）</summary>
+      <label><input data-setting="noFlipEnabled" type="checkbox"> 按局內時間啟用「保存升級選卡」</label>
       <label>本局經過幾分鐘後開啟<input data-setting="noFlipMinutes" type="number" min="0" max="180" step="0.1"></label>
-      <label><input data-setting="noFlipLevelEnabled" type="checkbox"> 按技能總等級啟用「之後不再翻牌」</label>
+      <label><input data-setting="noFlipLevelEnabled" type="checkbox"> 按技能總等級啟用「保存升級選卡」</label>
       <label>本局技能總等級達到<input data-setting="noFlipTotalLevel" type="number" min="1" max="99999" step="1"></label>
-      <small id="skill-total"></small><br><small>兩項可同時勾選，任一達標即開啟。技能總等級＝本局已擁有技能＋普攻的當前等級之和，每個技能只計一次；每局重新計算、觸發一次。只關閉之後的技能翻牌，寶箱照常；時間 0 表示開局後即啟用。</small></details>
+      <small id="skill-total"></small><br><small>舊時間／等級設定繼續有效，任一達標即保存技能牌，並停止本局自動拿出技能牌；目前未選完的技能牌也會保存，仍可手動拿出選擇。寶箱沿用開啟範圍。總等級＝已擁有技能＋普攻，每局觸發一次；時間 0 表示開局後啟用。新版已移除「不再翻牌」，保存不會刪除升級機會。</small></details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -1643,6 +1771,13 @@ self.onmessage = event => {
     ui.querySelector('#reset-position').onclick = resetPanelPosition;
     installPanelDrag();
     ui.querySelector('#toggle').onclick = toggle;
+    ui.querySelector('#stored-skill').onclick = () => { stopMove(); openStored('skill', true); renderStatus(); };
+    ui.querySelector('#stored-chest').onclick = () => { stopMove(); openStored('chest', true); renderStatus(); };
+    ui.querySelector('#stored-keep').onclick = () => {
+      const native = nativeSaveApi();
+      if (!saveGameReady(native) || state.game.state !== 'levelup' || !['lv', 'chest'].includes(native.curT) || $('#picker')?.classList.contains('closing')) return;
+      native.keep(); state.savedBatch = null; state.savedHold = true; resetPicker(); renderStatus(); log('已繼續保存目前牌，暫緩本局自動開啟；按開啟或切換範圍可恢復');
+    };
     ui.querySelector('#mail-save').onclick = () => {
       if (state.mailBusy) return;
       const next = normalizeMailSettings(Object.fromEntries([...ui.querySelectorAll('[data-mail]')].map(input => [input.dataset.mail, input.value])));
@@ -1692,11 +1827,16 @@ self.onmessage = event => {
         const patch = { ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value };
         if (key === 'progression' && patch.progression) patch.timedExitEnabled = false;
         cfg = validateConfig(patch); stopMove(); releaseTownKeys();
+        if (key === 'storedOpenMode') { state.savedHold = false; if (state.savedBatch) state.savedBatch.mode = cfg.storedOpenMode; }
+        if (['noFlipEnabled', 'noFlipMinutes', 'noFlipLevelEnabled', 'noFlipTotalLevel'].includes(key)) state.noFlipDone = false;
         if (['timedExitEnabled', 'timedExitMinutes', 'cleanupSeconds', 'expedition', 'expeditionLap', 'progression'].includes(key)) state.timedExit = null;
         if (key === 'autoDoubleSpeed') resetAutoSpeed();
         if (key === 'deathMailEnabled' && !cfg.deathMailEnabled) state.mailQueue = state.mailQueue.filter(job => job.kind !== 'death');
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
         if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.expeditionProbe = null; state.farmPlan = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
+      }
+      if (el.dataset.nativeSave) {
+        if (setNativeSave(el.dataset.nativeSave, el.checked)) log(`遊戲${el.dataset.nativeSave === 'chest' ? '寶箱' : '升級選卡'}保存：${el.checked ? '開啟' : '關閉'}`);
       }
       if (el.hasAttribute('data-sell-quality')) {
         const q = Number(el.dataset.sellQuality);
@@ -1734,11 +1874,12 @@ self.onmessage = event => {
       if (visible(prompt) && /隊長|captain|capitán/i.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
       else log('請先到遠征隊長附近，或手動打開遠征清單後再讀取');
     };
-    ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.expeditionProbe = null; state.farmPlan = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
+    ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.expeditionProbe = null; state.farmPlan = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；新版已保存牌保留原重抽計數'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
       const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), totalSkillLevels: readTotalSkillLevel(), chestSlots: ownedChestSlots(), noFlip: { enabled: cfg.noFlipEnabled, minutes: cfg.noFlipMinutes, levelEnabled: cfg.noFlipLevelEnabled, totalLevel: cfg.noFlipTotalLevel, applied: state.noFlipDone }, postRun: state.postRun?.stage, autoEquip: cfg.autoEquip, autoSell: cfg.autoSell, sellQualities: cfg.sellQualities, basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, repeatLap: cfg.expeditionLap, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         deity: { overrideEnabled: cfg.deityOverrideEnabled, overrides: cfg.deityOverrides, banishAfterPick: cfg.deityBanishAfterPick, banishTargets: cfg.deityBanishTargets, acquired: [...rememberDeity(g)] },
+        stored: { mode: cfg.storedOpenMode, supported: !!nativeSaveApi(), skillSaving: nativeSaveApi()?.prefLv(), chestSaving: nativeSaveApi()?.prefCh(), counts: storedCounts(g, picker && pickerKind(picker)), batch: state.savedBatch?.mode, manualHold: state.savedHold },
         email: { enabled: cfg.deathMailEnabled, configured: !mailSettingsError(mailSettings), queued: state.mailQueue.length, sending: state.mailBusy, accepted: state.mailAccepted, status: state.mailStatus },
         profile: { job: cfg.profileJob, gameJob: gameJobId(g), saved: Object.keys(cfg.jobProfiles) },
         timedExit: { enabled: cfg.timedExitEnabled, minutes: cfg.timedExitMinutes, cleanupSeconds: cfg.cleanupSeconds, phase: state.timedExit?.stage, pending: state.timedExit ? [...state.timedExit.items].filter(item => !item.dead).length : 0 },
@@ -1751,7 +1892,7 @@ self.onmessage = event => {
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.timedExit = null; state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.timedExit = null; state.flow = null; state.savedBatch = null; state.savedHold = false; state.noFlipDone = false; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populateMailSettings(); populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);
@@ -1764,7 +1905,13 @@ self.onmessage = event => {
     if (e.key === 'F9' && panel) { e.preventDefault(); e.stopImmediatePropagation(); togglePanel(); return; }
     if (e.key === 'Escape') state.resumeAfterVisibility = false;
     if (editing) { stopMove(); releaseTownKeys(); return; }
+    if (!e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && /^b$/i.test(e.key) && saveGameReady() && state.game.state === 'playing') { state.savedHold = false; state.savedBatch = null; state.savedOpenAt = performance.now(); }
     if (e.isTrusted && /^(w|a|s|d|arrowup|arrowdown|arrowleft|arrowright)$/i.test(e.key)) { state.manualUntil = performance.now() + 3000; stopMove(); releaseTownKeys(); }
+  }, true);
+  window.addEventListener('click', e => {
+    const button = e.target?.closest?.('#sv-bar button[data-t],#sv-open');
+    if (!button || button.disabled || !saveGameReady()) return;
+    state.savedBatch = null; state.savedHold = button.dataset.t === 'keep'; state.savedOpenAt = performance.now(); resetPicker();
   }, true);
   window.addEventListener('pointerdown', e => {
     if (!e.composedPath().includes(root) && e.target instanceof HTMLCanvasElement && e.isTrusted) { state.manualUntil = performance.now() + 3000; stopMove(); releaseTownKeys(); }

@@ -1609,7 +1609,7 @@ test('natural single skill offer can be parked through native delegated action e
  }finally{f.close();}
 });
 
-function nativeTownScenario(f,{player={x:0,y:0},target={x:650,y:300},yaw=0,pointer=false}={}){
+function nativeTownScenario(f,{player={x:0,y:0},target={x:650,y:300},yaw=0,pointer=false,action=require('./fixtures/native-town.json').captainActions.zh}={}){
  const spec=require('./fixtures/native-town.json'),w=f.w,d=w.document;
  townMarkup(f);f.game.state='over';f.camera.yaw=yaw;f.camera.targetYaw=yaw;
  d.body.insertAdjacentHTML('beforeend','<div id="stage"><canvas></canvas></div>');const canvas=d.querySelector('#stage canvas');
@@ -1624,7 +1624,7 @@ function nativeTownScenario(f,{player={x:0,y:0},target={x:650,y:300},yaw=0,point
  town.tick=w.eval(`(function(Vd,Sd,gp,rt,ln){const Ze=false,c=text=>text;return ${spec.tick}})`)(direction,spec.speedMultiplier,spec.radius,{move:{x:0,y:0}},class Sprite{});
  town.moveTo=w.eval(`(function(gp){return ${spec.moveTo}})`)(spec.radius);
  const nativeMove=town.moveTo;town.moveTo=function(...args){counts.path++;return nativeMove.apply(this,args)};
- town.npcs.push({x:target.x,y:target.y,view:npcView,action:'與隊長交談',onTalk(){counts.talk++;d.querySelector('#stages').classList.remove('hidden');d.querySelector('#stg-list').innerHTML='<button class="stg-card sel" data-i="0"><span class="stg-card-info"><b>普隆德拉原野</b></span></button>'}});
+ town.npcs.push({x:target.x,y:target.y,view:npcView,action,onTalk(){counts.talk++;d.querySelector('#stages').classList.remove('hidden');d.querySelector('#stg-list').innerHTML='<button class="stg-card sel" data-i="0"><span class="stg-card-info"><b>普隆德拉原野</b></span></button>'}});
  w.eval(`(function(Ie,Ze,Mw){return ${spec.bindInput}})`)(f.camera,false,null).call(town);
  d.querySelector('#stg-go').onclick=()=>{counts.launch++;d.querySelector('#stages').classList.add('hidden');d.querySelector('#lobby-ui').classList.add('hidden');d.body.classList.remove('in-lobby');world.gone=true;f.hooks.start[0]({...f.game,state:'playing',stageId:'prontera',difficulty:{lap:1}})};
  if(pointer){
@@ -1637,6 +1637,65 @@ function nativeTownScenario(f,{player={x:0,y:0},target={x:650,y:300},yaw=0,point
  function frames(n){for(let i=0;i<n&&!counts.launch;i++){if(d.body.classList.contains('in-lobby')){town.tick(.02);render()}f.advance(20)}}
  render();return{town,world,counts,render,frames,cleanup(){town.mouse?.destroy();for(const fn of town.cleanup)fn()}};
 }
+
+test('screenshot captain prompt uses Space through native input instead of moving past the nearby NPC',async()=>{
+ const f=await browserFixture({repeat:true});let scene;try{
+  scene=nativeTownScenario(f,{player:{x:139,y:378},target:{x:141,y:378}});
+  const down=[],up=[];let clicks=0;f.w.addEventListener('keydown',e=>down.push({key:e.key,code:e.code}));f.w.addEventListener('keyup',e=>up.push(e.code));
+  f.w.document.querySelector('#lobby-prompt').addEventListener('click',()=>clicks++);
+  scene.frames(100);
+  assert.equal(scene.counts.talk,1);assert.equal(scene.counts.launch,1);
+  assert.deepEqual(down,[{key:' ',code:'Space'}]);assert.deepEqual(up,['Space']);assert.equal(clicks,0);
+ }finally{scene?.cleanup();f.close();}
+});
+
+test('native captain action translations and legacy labels all open the expedition list',async()=>{
+ const actions=[...Object.values(require('./fixtures/native-town.json').captainActions),'與隊長交談','和船长说话'];
+ for(const action of actions){
+  const f=await browserFixture({repeat:true});let scene;try{
+   scene=nativeTownScenario(f,{player:{x:140,y:378},target:{x:141,y:378},action});scene.frames(70);
+   assert.equal(scene.counts.talk,1,action);assert.equal(scene.counts.launch,1,action);
+  }finally{scene?.cleanup();f.close();}
+ }
+});
+
+test('blocked Space falls back to the native talk button once, then departs once',async()=>{
+ const f=await browserFixture({repeat:true});let scene;try{
+  scene=nativeTownScenario(f,{player:{x:139,y:378},target:{x:141,y:378}});
+  let spaces=0,ups=0,clicks=0;
+  f.w.addEventListener('keydown',e=>{if(e.code==='Space'){spaces++;e.stopImmediatePropagation()}},true);
+  f.w.addEventListener('keyup',e=>{if(e.code==='Space')ups++});f.w.document.querySelector('#lobby-prompt').addEventListener('click',()=>clicks++);
+  scene.frames(150);
+  assert.equal(spaces,1);assert.equal(ups,1);assert.equal(clicks,1);assert.equal(scene.counts.talk,1);assert.equal(scene.counts.launch,1);
+ }finally{scene?.cleanup();f.close();}
+});
+
+test('unresponsive talk transition does not spam Space or clicks',async()=>{
+ const f=await browserFixture({repeat:true});let scene;try{
+  scene=nativeTownScenario(f,{player:{x:139,y:378},target:{x:141,y:378}});scene.town.npcs[0].onTalk=()=>scene.counts.talk++;
+  let spaces=0,clicks=0;f.w.addEventListener('keydown',e=>{if(e.code==='Space')spaces++});f.w.document.querySelector('#lobby-prompt').addEventListener('click',()=>clicks++);
+  scene.frames(100);f.advance(60000);scene.frames(10);
+  assert.equal(spaces,1);assert.equal(clicks,1);assert.equal(scene.counts.talk,2);assert.equal(scene.counts.launch,0);
+ }finally{scene?.cleanup();f.close();}
+});
+
+test('other NPC prompts, pause and overlays do not send captain interaction keys',async()=>{
+ for(const mode of ['other','paused','overlay']){
+  const f=await browserFixture({repeat:true});let scene;try{
+   scene=nativeTownScenario(f,{player:{x:139,y:378},target:{x:141,y:378},...(mode==='other'?{action:'和坐騎管理員說話'}:{})});
+   if(mode==='paused')f.ui.querySelector('#toggle').click();if(mode==='overlay')f.w.document.querySelector('#npc-dialog').classList.remove('hidden');
+   let spaces=0,clicks=0;f.w.addEventListener('keydown',e=>{if(e.code==='Space')spaces++});f.w.document.querySelector('#lobby-prompt').addEventListener('click',()=>clicks++);
+   scene.frames(70);assert.equal(spaces,0,mode);assert.equal(clicks,0,mode);assert.equal(scene.counts.talk,0,mode);
+  }finally{scene?.cleanup();f.close();}
+ }
+});
+
+test('read-stage button recognizes the screenshot captain wording even with automatic repeat off',async()=>{
+ const f=await browserFixture({repeat:false});let scene;try{
+  scene=nativeTownScenario(f,{player:{x:139,y:378},target:{x:141,y:378}});scene.frames(1);
+  f.ui.querySelector('#read-stages').click();assert.equal(scene.counts.talk,1);assert.equal(f.w.document.querySelectorAll('#stg-list .stg-card').length,1);
+ }finally{scene?.cleanup();f.close();}
+});
 
 for(const yaw of [0,Math.PI/2,Math.PI,-Math.PI/3])test(`native lobby movement reaches captain and departs without relying on nameplate geometry; yaw=${yaw}`,async()=>{
  const f=await browserFixture({repeat:true});let scene;try{

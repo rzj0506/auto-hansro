@@ -406,6 +406,83 @@ test('magnet interval uses game time and restarts after native pickup', async ()
 });
 
 
+
+function pickupRun(f, options = {}) {
+  f.w.document.body.insertAdjacentHTML('beforeend', '<div id="hud"></div>');
+  const moves = [], playerX = f.game.player.x;
+  Object.assign(f.game, { state: 'playing', stageId: 'prontera', lootUntil: -1, time: 0, level: 9, zeny: 100,
+    chestCost: () => 10, classDef: { speed: 100 }, stats: { speedMult: 1 },
+    buffValue: () => 0, bounds: { minX: 0, minY: 0, maxX: 1200, maxY: 1200 },
+    moveTo(x) { moves.push(Math.sign(x - playerX)); }, ...options });
+  const step = (time, pickups, direction) => {
+    moves.length = 0;
+    Object.assign(f.game, { time, pickups }); f.advance(1100);
+    assert.deepEqual(moves, direction ? [direction] : [], `movement at game time ${time}`);
+  };
+  return { step, game: f.game };
+}
+
+test('active chest and XP pickup stops independently at the configured levels, while magnets and gear remain eligible', async () => {
+  const f = await browserFixture({ dodge: false, chestHunt: true, pickups: true, stopChestPickupAtTotal: 20, stopXpPickupAtLevel: 10, magnetInterval: 30 });
+  try {
+    const { step, game } = pickupRun(f);
+    const setChest = count => {
+      game.runItems = { slots: new Map([['potion', { vals: Array(8) }], ['deity', { vals: Array(count - 8) }]]) };
+    };
+    const chest = { kind: 'chest', x: 600, y: 480 };
+    const gems = ['blue', 'yellow', 'red'].map(color => ({ kind: `gem_${color}`, x: 450, y: 480 }));
+    const gear = { kind: 'loot', x: 650, y: 480 }, magnet = { kind: 'magnet', x: 800, y: 480 };
+    const status = f.ui.querySelector('#pickup-threshold-status');
+
+    setChest(19); step(1, [chest, ...gems], 1);
+    game.level = 10; step(2, [chest, ...gems], 1);
+    step(3, gems, 0);
+    setChest(20); game.level = 9; step(4, [chest, ...gems], -1);
+    assert.match(status.textContent, /寶箱 20／20 · 等磁鐵.*角色 9／10 · 主動拾取經驗/);
+    game.level = 10; step(5, [chest, ...gems, magnet], 0);
+    step(6, [chest, ...gems, gear], 1);
+    step(30, [chest, ...gems, magnet], 1);
+    delete game.runItems; delete game.level;
+    step(31, [chest, ...gems], 1);
+
+    f.setting('stopChestPickupAtTotal', 0);
+    f.setting('stopXpPickupAtLevel', 0);
+    setChest(110); game.level = 100;
+    step(32, [chest], 1);
+    step(33, gems, -1);
+  } finally { f.close(); }
+});
+
+test('native boss countdown takes priority over early exit and collects rewards even with normal pickup disabled', async () => {
+  const f = await browserFixture({ dodge: false, pickups: false, chestHunt: true, magnetInterval: 60,
+    stopChestPickupAtTotal: 20, stopXpPickupAtLevel: 10, timedExitEnabled: true, timedExitMinutes: 0.1 });
+  try {
+    const { step, game } = pickupRun(f, { lootUntil: 30, level: 30, runItems: { slots: new Map([['potion', { vals: Array(25) }]]) } });
+    const doc = f.w.document;
+    doc.body.insertAdjacentHTML('beforeend', '<button id="btn-endrun">結束</button>');
+    let earlyExits = 0;
+    doc.querySelector('#btn-endrun').onclick = () => earlyExits++;
+    const chest = { kind: 'chest', x: 470, y: 480 }, gem = { kind: 'gem_blue', x: 430, y: 480 };
+    const gear = { kind: 'loot', x: 630, y: 480 }, magnet = { kind: 'magnet', x: 780, y: 480 };
+    step(10, [chest, gem, { ...gear, x: 455 }, magnet], 1);
+    assert.match(f.ui.querySelector('#victory-loot-status').textContent, /剩 20 局內秒/);
+    step(11, [chest], 0);
+    step(12, [chest, gem, gear], 1);
+    step(13, [chest, gem], -1);
+    assert.equal(earlyExits, 0);
+
+    doc.body.insertAdjacentHTML('beforeend', '<div id="drop-reveal"><div class="dr-inner"><button class="dr-get">領取</button></div></div>');
+    let claimed = 0;
+    doc.querySelector('.dr-get').onclick = () => { claimed++; doc.querySelector('#drop-reveal').classList.add('hidden'); };
+    game.state = 'reveal';
+    f.advance(100); f.advance(800);
+    assert.equal(claimed, 1);
+    game.state = 'over';
+    step(30, [gem], 0);
+    assert.equal(f.ui.querySelector('#victory-loot-status').hidden, true);
+  } finally { f.close(); }
+});
+
 test('card policies migrate old settings and the treasure switch stays independent', async () => {
   const f = await browserFixture({ skills: false, chests: false, storedOpenMode: 'both', dodge: false, pickups: false });
   try {

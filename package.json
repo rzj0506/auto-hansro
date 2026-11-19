@@ -1,6 +1,6 @@
 {
   "name": "auto-hansro",
-  "version": "1.14.1",
+  "version": "1.14.2",
   "private": true,
   "description": "ro.hans幸存者助手，基于用户提供的 v1.3.0 开发",
   "scripts": {

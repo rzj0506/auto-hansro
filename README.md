@@ -1,10 +1,16 @@
 # ro.hans幸存者助手
 
-基于用户提供的 **v1.3.0** 开发，当前版本 **v1.14.1**，适用于 <https://ro.hans-webgametw.com/>。
+基于用户提供的 **v1.3.0** 开发，当前版本 **v1.14.2**，适用于 <https://ro.hans-webgametw.com/>。
 
 [安装／更新脚本](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js) · [更新元数据](https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js)
 
 使用 Tampermonkey 安装后刷新游戏。首次使用保持暂停，按 F9 展开面板，按 F8 启动／暂停。安装改名后的脚本时，请停用原来的“RO 倖存者：三系法術與寶箱助手”，避免两个版本同时运行。
+
+## 分等级拾取与尾王收尾
+
+在“走位、拾取與運行設定”分别设置两个门槛。宝箱五栏总等级达标后停止主动寻宝，局内角色等级达标后停止主动走向经验宝石。宝箱首张算 1 级，空栏算 0。两个门槛默认都是 0，分别关闭。单人远征中，低于门槛时使用正常寻宝和安全拾取，达标后可用磁铁吸取对应掉落。
+
+尾王击倒后，面板显示原生拾取倒计时。助手会优先拾取磁铁、装备、卡片和宠物蛋，并恢复主动拾取经验。倒数期间按游戏规则结算，原生会锁定宝箱开启。
 
 ## 选牌设置、磁铁倒计时与死亡邮件汇总
 

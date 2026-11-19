@@ -21,6 +21,52 @@ test('job identity uses actual promotion before base class and rejects malformed
   assert.equal(C.gameJobId({classDef:{id:'<bad>'}}),'');assert.equal(C.gameJobId({}), '');
 });
 
+
+test('all native promotions resolve to the right base job without changing actual job identity', () => {
+  const { jobs } = require('./fixtures/native-job-run.json');
+  const byId = Object.fromEntries(jobs.map(job => [job.id, job]));
+  for (const job of jobs) {
+    let base = job;
+    while (base.base) base = byId[base.base];
+    assert.equal(C.gameBaseJobId({ classDef: job }), base.id, job.id);
+    assert.equal(C.gameBaseJobId({ promotion: job.id }), base.id, job.id);
+    assert.equal(C.gameJobId({ promotion: job.id }), job.id);
+  }
+  assert.equal(C.gameBaseJobId({ classDef: { id: 'future', base: 'knight' } }), 'swordsman');
+  assert.equal(C.gameBaseJobId({ look: { job: 'ninja', promotion: 'future' } }), 'ninja');
+});
+
+test('migration prefers an existing base profile, seeds missing families, and keeps old profiles in export', () => {
+  const old = { profileJob: 'warlock', first: 'old-top-level', jobProfiles: {
+    wizard: { first: 'old-wizard' }, warlock: { first: 'old-warlock', priorities: { potion: 'p_cd' } },
+    ranger: { first: 'old-ranger' }, archer: { first: 'base-archer' }, rune_knight: { first: 'old-knight' },
+  } };
+  const migrated = C.restoreConfig(old);
+  assert.equal(migrated.profileJob, 'mage');
+  assert.equal(migrated.first, 'old-warlock');
+  assert.equal(migrated.priorities.potion, 'p_cd');
+  assert.equal(migrated.jobProfiles.archer.first, 'base-archer');
+  assert.equal(migrated.jobProfiles.swordsman.first, 'old-knight');
+  assert.equal(migrated.jobProfiles.wizard.first, 'old-wizard');
+  assert.equal(migrated.jobProfiles.ranger.first, 'old-ranger');
+  assert.equal(C.restoreConfig({ ...old, jobProfiles: { ...old.jobProfiles, mage: { first: 'base-mage' } } }).first, 'base-mage');
+  assert.equal(C.restoreConfig({ profileJob: 'rebellion', first: 'triple_action' }).jobProfiles.gunslinger.first, 'triple_action');
+  assert.deepEqual(C.restoreConfig(JSON.parse(JSON.stringify(migrated))), migrated);
+  const edited = C.restoreConfig({ ...migrated, skillReroll: false });
+  assert.equal(edited.skillReroll, false);
+  assert.equal(edited.jobProfiles.mage.skillReroll, false);
+});
+
+test('native update action is global, opt-in and validated on import', () => {
+  assert.equal(C.restoreConfig({}).gameUpdateAction, 'manual');
+  for (const action of ['later', 'reload']) {
+    const settings = C.restoreConfig({ gameUpdateAction: action });
+    assert.equal(settings.gameUpdateAction, action);
+    assert.equal(C.profileSettings(settings).gameUpdateAction, undefined);
+  }
+  assert.equal(C.restoreConfig({ gameUpdateAction: 'confirm-all' }).gameUpdateAction, 'manual');
+});
+
 test('profile captures skill/chest choices but leaves movement, repeat, speed and timer global',()=>{
   const p=C.profileSettings(config({first:'bash',autoDoubleSpeed:true,timedExitEnabled:true}));
   assert.equal(p.first,'bash');assert(p.priorities);assert.equal(p.autoDoubleSpeed,undefined);assert.equal(p.timedExitEnabled,undefined);assert.equal(p.repeat,undefined);

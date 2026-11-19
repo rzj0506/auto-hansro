@@ -510,6 +510,72 @@ test('card policies migrate old settings and the treasure switch stays independe
   } finally { f.close(); }
 });
 
+
+const versionWords = [
+  ['新版本', '遊戲已推出新版本。請重新整理頁面：新版會在標題畫面下載，完成後即可繼續遊玩。', '稍後', '重新整理'],
+  ['New version', 'There is a new version of the game. Reload the page to get it.', 'Later', 'Reload'],
+  ['Versión nueva', 'Hay una versión nueva del juego. Recarga la página para ponerla.', 'Más tarde', 'Recargar'],
+  ['Nova versão', 'Há uma versão nova do jogo. Recarregue a página para atualizar.', 'Mais tarde', 'Recarregar'],
+];
+function versionDialogs(f) {
+  const doc = f.w.document, clicks = [];
+  doc.body.insertAdjacentHTML('beforeend', '<div id="npc-dialog" class="hidden"><div id="npc-name"></div><div id="npc-text"></div><div id="npc-options"></div></div>');
+  return { clicks, show([title, message, later, reload] = versionWords[0]) {
+    doc.querySelector('#npc-name').textContent = title;
+    doc.querySelector('#npc-text').textContent = message;
+    const actions = doc.querySelector('#npc-options');
+    actions.innerHTML = `<span class="spacer"></span><button class="ro-btn">${later}</button><button class="ro-btn primary">${reload}</button>`;
+    const buttons = actions.querySelectorAll('button');
+    buttons[0].onclick = () => clicks.push('later');
+    buttons[1].onclick = () => clicks.push('reload');
+    doc.querySelector('#npc-dialog').classList.remove('hidden');
+    return buttons;
+  } };
+}
+
+test('native version popup stays manual by default and defers only matching dialogs in all four languages', async () => {
+  const f = await browserFixture();
+  try {
+    const popup = versionDialogs(f);
+    popup.show(); f.advance(900);
+    assert.deepEqual(popup.clicks, []);
+    f.setting('gameUpdateAction', 'later');
+    f.ui.querySelector('#toggle').click();
+    popup.show(['新版本', '其他公告', '稍後', '重新整理']); f.advance(900);
+    assert.deepEqual(popup.clicks, []);
+    for (const words of versionWords) {
+      const buttons = popup.show(words);
+      buttons[0].disabled = true; f.advance(900);
+      buttons[0].disabled = false; f.advance(900); f.advance(900);
+    }
+    assert.deepEqual(popup.clicks, ['later', 'later', 'later', 'later']);
+    f.hooks.start[0]({ ...f.game, classDef: { id: 'hunter' } });
+    assert.equal(f.ui.querySelector('[data-setting="gameUpdateAction"]').value, 'later');
+  } finally { f.close(); }
+});
+
+test('auto reload clicks the native primary button and suppresses an immediate repeat across refresh', async () => {
+  const f = await browserFixture({ gameUpdateAction: 'reload' });
+  const key = 'ro-survivors-helper.last-game-update-reload';
+  let reloadAt;
+  try {
+    const popup = versionDialogs(f);
+    popup.show(); f.advance(900); f.advance(900);
+    assert.deepEqual(popup.clicks, ['reload']);
+    reloadAt = f.w.sessionStorage.getItem(key);
+    assert(Number(reloadAt) > 0);
+  } finally { f.close(); }
+
+  const reloaded = await browserFixture({ gameUpdateAction: 'reload' });
+  try {
+    reloaded.w.sessionStorage.setItem(key, reloadAt);
+    const popup = versionDialogs(reloaded);
+    popup.show(); reloaded.advance(900);
+    assert.deepEqual(popup.clicks, []);
+    assert.match(reloaded.ui.querySelector('#status').textContent, /請手動選擇/);
+  } finally { reloaded.close(); }
+});
+
 function equipmentUi(f, inventory, equipped) {
   townMarkup(f); const w = f.w, d = w.document, events = [];
   const character = { id: 'test', inventory, equipped };
@@ -687,7 +753,7 @@ test('new level rules are independent in the UI and survive per-job settings exp
  const f=await browserFixture();try{
   f.setting('skillLevelGate',true);f.setting('skillSaveAtLevel',75);f.setting('chestLevelGate',true);f.setting('chestSaveAtTotal',30);
   f.ui.querySelector('#export').click();const saved=JSON.parse(f.ui.querySelector('#config').value);
-  assert.equal(saved.skillSaveAtLevel,75);assert.equal(saved.chestSaveAtTotal,30);assert.equal(saved.jobProfiles.shared.skillLevelGate,true);
+  assert.equal(saved.skillSaveAtLevel,75);assert.equal(saved.chestSaveAtTotal,30);assert.equal(saved.jobProfiles.mage.skillLevelGate,true);assert.equal(saved.jobProfiles.shared.skillLevelGate,false);
  }finally{f.close();}
 });
 
@@ -1317,15 +1383,36 @@ test('job profiles migrate old mage setup and independently retain skills, chest
   const r=await browserFixture(saved);try{assert.equal(r.ui.querySelector('#job-profile').value,'swordsman');assert.equal(r.ui.querySelector('[data-setting="first"]').value,'bash');}finally{r.close();}
 });
 
-test('promotions get separate profiles and manual profile editing pauses then resumes with current job',async()=>{
-  const f=await browserFixture();try{
-    f.w.document.body.insertAdjacentHTML('beforeend','<div id="hud"></div>');
-    const base={...f.game,classDef:{id:'mage',name:'魔法師',start:'firebolt'},slots:['firebolt']};f.hooks.start[0](base);f.setting('fourth','napalm');
-    const wizard={...base,look:{promotion:'wizard'},jobLabel:'巫師'};f.hooks.start[0](wizard);assert.equal(f.ui.querySelector('#job-profile').value,'wizard');
-    f.setting('fourth','soul_strike');const select=f.ui.querySelector('#job-profile');select.value='mage';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));
-    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,false);assert.match(f.ui.querySelector('[data-setting="fourth"]').value,/napalm/);
-    f.ui.querySelector('#toggle').click();assert.equal(select.value,'wizard');assert.match(f.ui.querySelector('[data-setting="fourth"]').value,/soul_strike/);
-  }finally{f.close();}
+test('base job settings are shared across promotions and only nine base jobs can be edited', async () => {
+  const f = await browserFixture();
+  try {
+    f.w.document.body.insertAdjacentHTML('beforeend', '<div id="hud"></div>');
+    const select = f.ui.querySelector('#job-profile');
+    assert.deepEqual([...select.options].map(option => option.value), ['swordsman', 'mage', 'archer', 'acolyte', 'thief', 'merchant', 'taekwon', 'ninja', 'gunslinger']);
+    const base = { ...f.game, classDef: { id: 'mage', name: '魔法師', start: 'firebolt' }, slots: ['firebolt'] };
+    f.hooks.start[0](base);
+    f.setting('fourth', 'napalm');
+    f.hooks.start[0]({ ...base, look: { promotion: 'wizard' } });
+    assert.equal(select.value, 'mage');
+    assert.match(f.ui.querySelector('[data-setting="fourth"]').value, /napalm/);
+    f.setting('fourth', 'soul_strike');
+    const potion = f.ui.querySelector('[data-priority="potion"]');
+    potion.value = 'p_cd'; potion.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+    f.hooks.start[0]({ ...base, classDef: { id: 'warlock', base: 'wizard' }, promotion: 'warlock' });
+    assert.equal(select.value, 'mage');
+    assert.match(f.ui.querySelector('[data-setting="fourth"]').value, /soul_strike/);
+    assert.match(potion.value, /p_cd/);
+    select.value = 'archer'; select.dispatchEvent(new f.w.Event('change', { bubbles: true }));
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled, false);
+    assert.equal(potion.value, '');
+    f.ui.querySelector('#toggle').click();
+    assert.equal(select.value, 'mage');
+    assert.match(potion.value, /p_cd/);
+    f.ui.querySelector('#export').click();
+    const exported = JSON.parse(f.ui.querySelector('#config').value);
+    assert.deepEqual(Object.keys(exported.jobProfiles).sort(), ['archer', 'mage', 'shared']);
+    assert.equal(exported.jobProfiles.mage.fourth, 'soul_strike');
+  } finally { f.close(); }
 });
 
 test('actual non-mage skill picker accepts its job skill with blank generic targets',async()=>{

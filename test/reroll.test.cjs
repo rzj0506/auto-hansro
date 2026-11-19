@@ -64,7 +64,7 @@ test('enabled chest reroll still obeys mode, budgets, reserves, limits and first
 
 // Mount the actual userscript in a DOM and drive its interval and click handlers.
 // Game hooks and picker markup are fixtures; no game/network operations run here.
-async function browserFixture(saved = {}, mailSaved = null) {
+async function browserFixture(saved = {}, mailSaved = null, digestSaved = null) {
   const errors = [];
   const console = new VirtualConsole();
   console.on('jsdomError', error => errors.push(error));
@@ -84,6 +84,7 @@ async function browserFixture(saved = {}, mailSaved = null) {
   Object.defineProperty(w.performance, 'now', { value: () => now });
   w.localStorage.setItem(STORAGE, JSON.stringify({ background: false, dodge: false, pickups: false, ...saved }));
   if(mailSaved)w.localStorage.setItem('ro-survivors-helper.emailjs.v1',JSON.stringify(mailSaved));
+  if (digestSaved) w.sessionStorage.setItem('ro-survivors-helper.mail-digest.v1', digestSaved);
   const hooks = { start: [], tick: [], hurt: [], cast: [], kill: [] };
   const registry = Object.fromEntries([...C.FIXED, 'soul_strike', 'napalm'].map(id => [id, { name: ({ firebolt: '火箭術', coldbolt: '冰箭術', lightning: '雷擊術', soul_strike: '聖靈召喚', napalm: '心靈爆破' })[id] }]));
   const items = { p_cd: { id: 'p_cd', slot: 'potion', name: '冷卻藥水' }, p_hp: { id: 'p_hp', slot: 'potion', name: '生命藥水' }, p_dmg: { id: 'p_dmg', slot: 'potion', name: '傷害藥水' }, p_area: { id: 'p_area', slot: 'potion', name: '範圍藥水' }, e_dmg: { id: 'e_dmg', slot: 'elixir', name: '傷害秘藥' }, e_hp: { id: 'e_hp', slot: 'elixir', name: '生命秘藥' }, b_dmg: { id: 'b_dmg', slot: 'blessing', name: '傷害祝福' } };
@@ -107,6 +108,11 @@ async function browserFixture(saved = {}, mailSaved = null) {
     if (element.type === 'checkbox') element.checked = value; else element.value = value;
     element.dispatchEvent(new w.Event('change', { bubbles: true }));
   }
+  function policy(key, value) {
+    const element = ui.querySelector(`[data-card-policy="${key}"]`);
+    element.value = value;
+    element.dispatchEvent(new w.Event('change', { bubbles: true }));
+  }
   function advance(ms, runIntervals = true) { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); } if (runIntervals) for (const timer of intervals.values()) if (timer.ms === 100 || timer.ms === 500) timer.fn(); }
   function picker(kind, { eligible = false, cardDisabled = false, deckDisabled = false } = {}) {
     const counts = { card: 0, deck: 0, pick: 0 };
@@ -127,7 +133,7 @@ async function browserFixture(saved = {}, mailSaved = null) {
     advance(100); advance(1100);
     return counts;
   }
-  return { w, ui, game, hooks, items, World, camera, assets, setting, advance, picker, errors, close() { assert.deepEqual(errors, []); dom.window.close(); } };
+  return { w, ui, game, hooks, items, World, camera, assets, setting, policy, advance, picker, errors, close() { assert.deepEqual(errors, []); dom.window.close(); } };
 }
 
 for (const skillReroll of [false, true]) for (const chestReroll of [false, true]) {
@@ -380,16 +386,50 @@ test('magnet interval uses game time and restarts after native pickup', async ()
       f.game.time = time; f.advance(1100);
       assert(direction * (moves.pop() - f.game.player.x) > 0, `movement at game time ${time}`);
     };
+    const status = f.ui.querySelector('#magnet-status');
     step(29, -1);
+    assert.match(status.textContent, /還有 1 局內秒/);
     step(30, 1);
+    assert.match(status.textContent, /正在引導拾取/);
     magnet.magnet = true;
     step(31, -1);
+    assert.match(status.textContent, /吸附中/);
     magnet.dead = true; f.game.pickups = [gem, otherMagnet];
     step(32, -1);
+    assert.match(status.textContent, /還有 30 局內秒.*已拾取 1 次/);
     step(61, -1);
     step(62, 1);
     f.setting('magnetInterval', 0);
     assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).magnetInterval, 0);
+    assert.equal(status.hidden, true);
+  } finally { f.close(); }
+});
+
+
+test('card policies migrate old settings and the treasure switch stays independent', async () => {
+  const f = await browserFixture({ skills: false, chests: false, storedOpenMode: 'both', dodge: false, pickups: false });
+  try {
+    const find = key => f.ui.querySelector(`[data-setting="${key}"]`);
+    for (const key of ['skills', 'chests']) assert.equal(find(key), null);
+    const movement = find('chestHunt').closest('details');
+    for (const key of ['dodge', 'pickups']) assert(movement.contains(find(key)));
+    const skillPolicy = f.ui.querySelector('[data-card-policy="skills"]');
+    const chestPolicy = f.ui.querySelector('[data-card-policy="chests"]');
+    assert.equal(skillPolicy.value, 'manual');
+    assert.equal(chestPolicy.value, 'manual');
+    assert.equal(find('chestHunt').checked, false);
+
+    f.setting('chestHunt', true);
+    assert.equal(chestPolicy.value, 'manual');
+    f.policy('skills', 'pick'); f.policy('chests', 'open');
+    const saved = JSON.parse(f.w.localStorage.getItem(STORAGE));
+    assert.equal(saved.skills, true);
+    assert.equal(saved.chests, true);
+    assert.equal(saved.storedOpenMode, 'chests');
+    assert.equal(saved.chestHunt, true);
+    const chest = { kind: 'chest', x: 500, y: 475 };
+    assert.equal(C.pickupTargets([chest], f.game.player, 50, 10, { ...saved, chests: false })[0].pickup, chest);
+    assert.equal(C.pickupTargets([chest], f.game.player, 50, 10, { ...saved, chestHunt: false }).length, 0);
   } finally { f.close(); }
 });
 
@@ -717,7 +757,7 @@ test('bell respects pause, toggle, replay, hidden-tab policy and new-run cleanup
   try {
     const s = moonBellScenario(f); s.g.state = 'paused'; s.step(.2); assert.equal(s.g.moves.length, 0);
     s.g.state = 'playing'; s.g.replayMoves = []; s.step(.2); assert.equal(s.g.moves.length, 0);
-    s.g.replayMoves = null; f.setting('bellShelter', false); f.setting('chests', false); f.setting('pickups', false);
+    s.g.replayMoves = null; f.setting('bellShelter', false); f.setting('chestHunt', false); f.setting('pickups', false);
     s.step(.2); assert.match(f.ui.querySelector('#bell-status').textContent, /未啟用/);
     f.setting('bellShelter', true);
     Object.defineProperty(f.w.document, 'hidden', { configurable: true, value: true });
@@ -1334,7 +1374,7 @@ function mailGame(f,patch={}){
   const g={...f.game,state:'over',stageId:'payon',difficulty:{lap:2},time:189,level:12,kills:321,player:{x:500,y:500,dead:true},...patch};f.hooks.tick[0](g);return g;
 }
 test('mail setup saves locally and stays out of export and diagnostics',async()=>{
-  const f=await browserFixture({deathMailEnabled:true});let saved,stored;try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0});let saved,stored;try{
     for(const [key,value]of Object.entries(mailFixtureSettings))f.ui.querySelector(`[data-mail="${key}"]`).value=value;
     f.ui.querySelector('#mail-save').click();stored=JSON.parse(f.w.localStorage.getItem('ro-survivors-helper.emailjs.v1'));assert.deepEqual(stored,mailFixtureSettings);
     f.ui.querySelector('#export').click();saved=JSON.parse(f.ui.querySelector('#config').value);
@@ -1345,7 +1385,7 @@ test('mail setup saves locally and stays out of export and diagnostics',async()=
   const r=await browserFixture(saved,stored);try{assert.equal(r.ui.querySelector('[data-mail="toEmail"]').value,mailFixtureSettings.toEmail);assert.equal(r.ui.querySelector('[data-setting="deathMailEnabled"]').checked,true);}finally{r.close();}
 });
 test('death sends once per run even when assistant is paused in background and death page redraws',async()=>{
-  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0},mailFixtureSettings);try{
     const calls=mailTransport(f);f.ui.querySelector('#toggle').click();Object.defineProperty(f.w.document,'hidden',{configurable:true,value:true});const g=mailGame(f);
     for(let i=0;i<10;i++){f.hooks.tick[0](g);f.advance(100)}await mailFlush();
     assert.equal(calls.length,1);assert.equal(calls[0].payload.template_params.survival_time,'03:09');assert.equal(calls[0].options.credentials,'omit');assert.equal(calls[0].options.referrerPolicy,'no-referrer');
@@ -1353,15 +1393,51 @@ test('death sends once per run even when assistant is paused in background and d
   }finally{f.close();}
 });
 test('pending death snapshot survives a new run and requests respect rate interval',async()=>{
-  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0},mailFixtureSettings);try{
     const calls=mailTransport(f);mailGame(f,{stageId:'payon'});mailGame(f,{stageId:'payon_cave',time:400});
     f.advance(100);await mailFlush();assert.equal(calls.length,1);assert.equal(calls[0].payload.template_params.stage_id,'payon');
     f.advance(1000);await mailFlush();assert.equal(calls.length,1);
     f.advance(100);await mailFlush();assert.equal(calls.length,2);assert.equal(calls[1].payload.template_params.stage_id,'payon_cave');
   }finally{f.close();}
 });
+
+test('two deaths form one timed digest, and refreshing preserves the pending batch', async () => {
+  const initial = await browserFixture({ deathMailEnabled: true }, mailFixtureSettings);
+  const key = 'ro-survivors-helper.mail-digest.v1';
+  let saved;
+  try {
+    assert.equal(initial.ui.querySelector('[data-setting="deathMailDigestMinutes"]').value, '30');
+    const calls = mailTransport(initial);
+    const first = mailGame(initial, { stageId: 'payon' });
+    initial.advance(2000);
+    initial.hooks.tick[0](first);
+    mailGame(initial, { stageId: 'c2_gef', time: 400 });
+    assert.equal(calls.length, 0);
+    assert.match(initial.ui.querySelector('#mail-status').textContent, /已累積 2 筆/);
+    saved = initial.w.sessionStorage.getItem(key);
+  } finally { initial.close(); }
+
+  const reloaded = await browserFixture({ deathMailEnabled: true }, mailFixtureSettings, saved);
+  try {
+    const calls = mailTransport(reloaded);
+    const elapsed = reloaded.w.performance.timeOrigin - JSON.parse(saved).startedAt;
+    reloaded.advance(1800000 - elapsed - 1);
+    assert.equal(calls.length, 0);
+    reloaded.advance(2);
+    await mailFlush();
+    assert.equal(calls.length, 1);
+    const { title, message, death_count } = calls[0].payload.template_params;
+    assert.match(title, /遠征死亡摘要/);
+    assert.equal(death_count, 2);
+    assert.match(message, /斐揚森林[\s\S]*吉芬地下迷宮/);
+    assert.equal(reloaded.w.sessionStorage.getItem(key), null);
+    reloaded.advance(1800000);
+    assert.equal(calls.length, 1);
+  } finally { reloaded.close(); }
+});
+
 test('normal victory and native timed settlement never send death mail',async()=>{
-  const f=await browserFixture({deathMailEnabled:true,timedExitEnabled:true,expedition:'payon',cleanupSeconds:0},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0,timedExitEnabled:true,expedition:'payon',cleanupSeconds:0},mailFixtureSettings);try{
     const calls=mailTransport(f);mailGame(f,{player:{x:500,y:500,dead:false}});f.advance(100);await mailFlush();assert.equal(calls.length,0);
     const s=timedRunScenario(f);s.game.runCards=[4001];s.step(.3);await mailFlush();assert.equal(s.report.saved,1);assert.equal(calls.length,0);
   }finally{f.close();}
@@ -1373,21 +1449,21 @@ test('test mail works with alerts off and a double click cannot duplicate reques
   }finally{f.close();}
 });
 for(const status of [400,429,500])test(`EmailJS HTTP ${status} never retries same run or stops automation`,async()=>{
-  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0},mailFixtureSettings);try{
     const calls=mailTransport(f,()=>Promise.resolve({ok:false,status}));mailGame(f);f.advance(100);await mailFlush();
     for(let i=0;i<5;i++)f.advance(5000);await mailFlush();assert.equal(calls.length,1);assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).enabled,true);
     assert.match(f.ui.querySelector('#mail-status').textContent,new RegExp('HTTP '+status));
   }finally{f.close();}
 });
 test('mail request timeout is contained, reports uncertain result and does not resend',async()=>{
-  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0},mailFixtureSettings);try{
     const calls=mailTransport(f,(url,options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted')))));
     mailGame(f);f.advance(100);assert.equal(calls.length,1);f.advance(15000);await mailFlush();
     f.advance(30000);await mailFlush();assert.equal(calls.length,1);assert.match(f.ui.querySelector('#mail-status').textContent,/逾時/);
   }finally{f.close();}
 });
 test('missing setup, stale lobby game and inactive game tab never send mail',async()=>{
-  const f=await browserFixture({deathMailEnabled:true});try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0});try{
     const calls=mailTransport(f);mailGame(f);f.advance(100);await mailFlush();assert.equal(calls.length,0);
     for(const [key,value]of Object.entries(mailFixtureSettings))f.ui.querySelector(`[data-mail="${key}"]`).value=value;f.ui.querySelector('#mail-save').click();
     f.w.document.querySelector('#hud').classList.add('hidden');f.advance(2000);await mailFlush();assert.equal(calls.length,0);
@@ -1395,7 +1471,7 @@ test('missing setup, stale lobby game and inactive game tab never send mail',asy
   }finally{f.close();}
 });
 test('turning alerts off cancels pending deaths and clear removes local service settings',async()=>{
-  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0},mailFixtureSettings);try{
     const calls=mailTransport(f);mailGame(f);f.setting('deathMailEnabled',false);f.advance(2000);await mailFlush();assert.equal(calls.length,0);
     f.ui.querySelector('#mail-clear').click();assert.equal(f.w.localStorage.getItem('ro-survivors-helper.emailjs.v1'),null);
     assert.equal(f.ui.querySelector('[data-setting="deathMailEnabled"]').checked,false);assert.equal(f.ui.querySelector('[data-mail="publicKey"]').value,'');
@@ -1403,7 +1479,7 @@ test('turning alerts off cancels pending deaths and clear removes local service 
 });
 
 test('network failure does not expose provider details, retry mail or disable the assistant',async()=>{
-  const f=await browserFixture({deathMailEnabled:true},mailFixtureSettings);try{
+  const f=await browserFixture({deathMailEnabled:true,deathMailDigestMinutes:0},mailFixtureSettings);try{
     const calls=mailTransport(f,()=>Promise.reject(new Error('private provider details '+mailFixtureSettings.publicKey)));
     mailGame(f);f.advance(100);await mailFlush();for(let i=0;i<5;i++)f.advance(5000);await mailFlush();
     assert.equal(calls.length,1);assert.match(f.ui.querySelector('#mail-status').textContent,/網路錯誤/);assert(!f.ui.querySelector('#log').textContent.includes(mailFixtureSettings.publicKey));
@@ -1624,7 +1700,7 @@ for(const rerollMode of ['card','deck'])test(`saved chest budget survives ${rero
   const f=await browserFixture({storedOpenMode:'chests',rerollMode,maxRerolls:1,exhausted:'wait',priorities:{potion:'p_cd',elixir:'e_dmg'}});try{
     const s=storedScenario(f,{skills:0,chests:2,chestIds:[['p_hp'],['e_hp']],exposeGlobal:false});s.step(7);
     assert.equal(s.counts[rerollMode],1);assert.equal(s.g.openingChest,null);assert.equal(s.diagnostic().usedRerolls,1);
-    f.setting('storedOpenMode','manual');f.ui.querySelector('#stored-keep').click();s.step(2);
+    f.policy('chests', 'pick');f.ui.querySelector('#stored-keep').click();s.step(2);
     const kept=s.g.roChestKeep;assert(kept);f.ui.querySelector('#rescan').click();s.step();
     f.ui.querySelector('#stored-chest').click();s.step(5);assert.equal(s.counts[rerollMode],1);assert.equal(s.S.curK,kept);assert.equal(s.diagnostic().usedRerolls,1);
     f.w.document.querySelector('.pk-card').click();s.step(8);

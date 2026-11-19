@@ -422,6 +422,43 @@ function pickupRun(f, options = {}) {
   return { step, game: f.game };
 }
 
+test('due magnet outranks nearby drops even outside the regular loot range', async () => {
+  const f = await browserFixture({ dodge: false, pickups: true, lootRange: 200, magnetInterval: 30 });
+  try {
+    const { step } = pickupRun(f);
+    const gems = Array.from({ length: 10 }, (_, i) => ({ kind: 'gem_blue', x: 340 + i * 12, y: 480 }));
+    const magnet = { kind: 'magnet', x: 2600, y: 480 };
+    step(29, [...gems, magnet], -1);
+    step(30, [...gems, magnet], 1);
+    assert.match(f.ui.querySelector('#magnet-status').textContent, /正在引導拾取 · 距離 2100/);
+  } finally { f.close(); }
+});
+
+test('magnet pickup tries another route and reports when all approaches are blocked', async () => {
+  const f = await browserFixture({ dodge: false, pickups: true, magnetInterval: 30 });
+  try {
+    const { step, game } = pickupRun(f, { walk: {
+      nearestWalkable: (x, y) => [x, y],
+      pathTo: (_x, _y, x, y) => x === 560 ? null : [{ x, y }],
+      walkable: () => true,
+      resolve: (_x, _y, x, y) => [x, y],
+    } });
+    const blocked = { kind: 'magnet', x: 560, y: 480 };
+    const available = { kind: 'magnet', x: 350, y: 480 };
+    const status = f.ui.querySelector('#magnet-status');
+    step(30, [blocked], 0);
+    assert.match(status.textContent, /無可達路線/);
+    step(31, [blocked, available], -1);
+    game.enemies = [{ x: 500, y: 500, radius: 100 }];
+    step(32, [blocked, available], 0);
+    assert.match(status.textContent, /路線有危險/);
+    game.enemies = [];
+    step(33, [blocked, available], -1);
+    step(34, [], 0);
+    assert.match(status.textContent, /地上沒有可拾取的磁鐵/);
+  } finally { f.close(); }
+});
+
 test('active chest and XP pickup stops independently at the configured levels, while magnets and gear remain eligible', async () => {
   const f = await browserFixture({ dodge: false, chestHunt: true, pickups: true, stopChestPickupAtTotal: 20, stopXpPickupAtLevel: 10, magnetInterval: 30 });
   try {

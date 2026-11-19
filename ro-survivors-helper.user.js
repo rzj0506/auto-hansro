@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.14.0
-// @description  支援第二章自動遠征、定時優先拾取磁鐵、可折疊的職業技能與寶箱設定。
+// @version      1.14.1
+// @description  第二章自動遠征、磁鐵拾取倒計時、技能／寶箱保存與死亡郵件摘要。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.14.0';
+  const VERSION = '1.14.1';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -48,7 +48,7 @@
     lightning: ['雷擊術', '雷撃術', 'Lightning Bolt', 'Saeta de rayo'],
   };
   const DEFAULTS = {
-    enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, pickups: true, background: true, autoDoubleSpeed: false,
+    enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, chestHunt: true, pickups: true, background: true, autoDoubleSpeed: false,
     first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     profileJob: '', jobProfiles: {},
     chestFillFirst: true, chestSmartReroll: true,
@@ -59,7 +59,7 @@
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, progression: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     timedExitEnabled: false, timedExitMinutes: 3, cleanupSeconds: 20,
-    deathMailEnabled: false,
+    deathMailEnabled: false, deathMailDigestMinutes: 30,
     lootRange: 1800, magnetInterval: 0, partyRoll: 'greed',
     rerollMode: 'card-deck', maxRerolls: 6, reserveCard: 0, reserveDeck: 0,
     exhausted: 'best', delay: 1000, safety: 65, chestRange: 2400,
@@ -228,7 +228,7 @@
   function pickupTargets(pickups, player, zeny, cost, cfg, enemies = [], magnetDue = null) {
     const candidates = pickups.filter(p => {
       if (p.dead || p.magnet || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
-      if (p.kind === 'chest') return cfg.chests && zeny >= cost;
+      if (p.kind === 'chest') return cfg.chestHunt && zeny >= cost;
       if (p.kind === 'magnet' && magnetDue === false) return false;
       return cfg.pickups && /^(gem_blue|gem_yellow|gem_red|zeny|loot|card|egg|meat|magnet)$/.test(p.kind);
     }).map(p => ({ pickup: p, priority: p.kind === 'magnet' && magnetDue === true ? -1 : pickupPriority(p.kind), x: p.x, y: p.y + 20, distance: Math.hypot(p.x - player.x, p.y + 20 - player.y) }))
@@ -439,7 +439,7 @@ self.onmessage = event => {
   function validateConfig(raw, includeProfiles = true) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'deityOverrideEnabled', 'deityBanishAfterPick', 'skillLevelGate', 'chestLevelGate', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression', 'timedExitEnabled', 'deathMailEnabled']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'bellShelter', 'chests', 'chestHunt', 'pickups', 'background', 'autoDoubleSpeed', 'rarityFirst', 'skillReroll', 'chestReroll', 'chestFillFirst', 'chestSmartReroll', 'deityOverrideEnabled', 'deityBanishAfterPick', 'skillLevelGate', 'chestLevelGate', 'autoEquip', 'autoSell', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat', 'progression', 'timedExitEnabled', 'deathMailEnabled']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     for (const key of ['deityOverrides', 'deityBanishTargets']) if (typeof raw[key] === 'string') out[key] = raw[key].slice(0, 5000);
     if (Number.isInteger(Number(raw.expeditionLap)) && Number(raw.expeditionLap) >= 1 && Number(raw.expeditionLap) <= 99) out.expeditionLap = Number(raw.expeditionLap);
     for (const key of ['skillSaveAtLevel','chestSaveAtTotal']) if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), 1, 99999);
@@ -449,13 +449,14 @@ self.onmessage = event => {
     if (Number.isFinite(Number(raw.cleanupSeconds))) out.cleanupSeconds = clamp(Math.round(Number(raw.cleanupSeconds)), 0, 120);
     if (out.timedExitEnabled) out.progression = false;
     if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
+    if (includeProfiles && typeof raw.chestHunt !== 'boolean' && typeof raw.chests === 'boolean') out.chestHunt = raw.chests;
     if (typeof raw.expedition === 'string') out.expedition = raw.expedition.slice(0, 150);
     if (Array.isArray(raw.banishExclude)) out.banishExclude = [...new Set(raw.banishExclude.filter(v => typeof v === 'string' && /^[\w.-]{1,100}$/.test(v)))].slice(0, 500);
     if (['greed', 'need', 'pass', 'manual'].includes(raw.partyRoll)) out.partyRoll = raw.partyRoll;
     if (['manual', 'skills', 'chests', 'both'].includes(raw.storedOpenMode)) out.storedOpenMode = raw.storedOpenMode;
     if (['card-deck', 'deck-card', 'card', 'deck', 'off'].includes(raw.rerollMode)) out.rerollMode = raw.rerollMode;
     if (['best', 'wait'].includes(raw.exhausted)) out.exhausted = raw.exhausted;
-    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['magnetInterval', 0, 600], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
+    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['magnetInterval', 0, 600], ['deathMailDigestMinutes', 0, 1440], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
       if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), lo, hi);
     }
     for (const slot of Object.keys(SLOT_NAMES)) if (typeof raw.priorities?.[slot] === 'string') out.priorities[slot] = raw.priorities[slot].slice(0, 5000);
@@ -577,6 +578,8 @@ self.onmessage = event => {
 
   const STORAGE = 'ro-survivors-helper.settings.v1';
   const MAIL_STORAGE = 'ro-survivors-helper.emailjs.v1';
+  const MAIL_DIGEST_STORAGE = 'ro-survivors-helper.mail-digest.v1';
+  const MAIL_DIGEST_LIMIT = 40;
   const POSITION_STORAGE = 'ro-survivors-helper.panel-position.v1';
   let cfg = validateConfig(DEFAULTS);
   try { const saved = localStorage.getItem(STORAGE); if (saved) cfg = validateConfig(JSON.parse(saved)); } catch (error) { console.warn('[RO助手] 設定讀取失敗', error); }
@@ -599,10 +602,10 @@ self.onmessage = event => {
     postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false, npcApproach: null, nativeDispatch: false,
     townWorldViews: new WeakMap(), townWorldHooks: new WeakSet(), townScene: null, townCamera: null, townBridge: '等待原生廣場場景',
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
-    profileJobs: {}, runJob: '', timedExit: null, magnets: [], lastMagnetAt: 0,
+    profileJobs: {}, runJob: '', timedExit: null, magnets: [], lastMagnetAt: 0, magnetsCollected: 0, pursuingMagnet: false,
     deitySeen: new WeakMap(),
     offerBooks: new WeakMap(), activeOffer: null, savedBatch: null, savedHold: false, savedOpenAt: -Infinity, manualSelection: null,
-    mailSeen: new WeakSet(), mailQueue: [], mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
+    mailSeen: new WeakSet(), mailQueue: [], mailDigest: null, mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
   };
   let root, panel, ui, interval, attachTimer;
   const $ = selector => document.querySelector(selector);
@@ -623,10 +626,29 @@ self.onmessage = event => {
   function populateMailSettings() {
     for (const input of ui.querySelectorAll('[data-mail]')) input.value = mailSettings[input.dataset.mail] || '';
   }
+  function saveMailDigest(digest) {
+    state.mailDigest = digest;
+    try {
+      if (digest) sessionStorage.setItem(MAIL_DIGEST_STORAGE, JSON.stringify(digest));
+      else sessionStorage.removeItem(MAIL_DIGEST_STORAGE);
+    } catch { /* 瀏覽器未提供分頁儲存時，仍可在本頁彙總。 */ }
+  }
+  if (cfg.deathMailEnabled && !mailSettingsError(mailSettings)) {
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(MAIL_DIGEST_STORAGE));
+      if (Number.isFinite(stored?.startedAt) && Number.isSafeInteger(stored.count) && stored.count > 0 &&
+          Array.isArray(stored.messages) && stored.messages.length && stored.messages.length <= Math.min(stored.count, MAIL_DIGEST_LIMIT) &&
+          stored.messages.every(message => typeof message === 'string' && message.length <= 300)) state.mailDigest = stored;
+    } catch { /* 無法讀取時從下一筆死亡開始彙總。 */ }
+  }
+  const mailDigestRemaining = (now, digest) => Math.max(0, digest.startedAt + cfg.deathMailDigestMinutes * 60000 - (performance.timeOrigin + now));
   function renderMailStatus() {
     if (!ui) return;
     const error = mailSettingsError(mailSettings);
-    ui.querySelector('#mail-status').textContent = `${cfg.deathMailEnabled ? '死亡提醒已開啟（不依賴助手啟動）' : '死亡提醒未開啟'} · ${error || state.mailStatus}${state.mailQueue.length ? ` · 排隊 ${state.mailQueue.length}` : ''}`;
+    const digest = state.mailDigest;
+    const minutes = digest ? Math.ceil(mailDigestRemaining(performance.now(), digest) / 60000) : 0;
+    const pending = cfg.deathMailEnabled && digest ? ` · 已累積 ${digest.count} 筆 · ${minutes ? `約 ${minutes} 分鐘後寄出` : '已到寄送時間'}` : '';
+    ui.querySelector('#mail-status').textContent = `${cfg.deathMailEnabled ? '死亡提醒已開啟（不依賴助手啟動）' : '死亡提醒未開啟'} · ${error || state.mailStatus}${state.mailQueue.length ? ` · 排隊 ${state.mailQueue.length}` : ''}${pending}`;
     ui.querySelector('#mail-test').disabled = !!error || state.mailBusy || state.mailQueue.length > 0;
     ui.querySelector('#mail-save').disabled = state.mailBusy;
     ui.querySelector('#mail-clear').disabled = state.mailBusy;
@@ -644,24 +666,33 @@ self.onmessage = event => {
       || !visible($('#hud')) && !visible($('#gameover'))) return;
     if (mailSettingsError(mailSettings)) { state.mailStatus = '本局死亡，但 EmailJS 通知設定未完成'; return; }
     state.mailSeen.add(game);
-    queueMail('death', deathMailEvent(game, new Date().toLocaleString('zh-TW', { hour12: false })));
+    const event = deathMailEvent(game, new Date().toLocaleString('zh-TW', { hour12: false }));
+    if (!cfg.deathMailDigestMinutes && !state.mailDigest) { queueMail('death', event); return; }
+    const digest = state.mailDigest || { startedAt: performance.timeOrigin + performance.now(), count: 0, messages: [] };
+    digest.count++;
+    digest.messages.push(event.message.slice(0, 300));
+    if (digest.messages.length > MAIL_DIGEST_LIMIT) digest.messages.shift();
+    saveMailDigest(digest);
+    renderMailStatus();
   }
   async function deliverMail(job) {
     state.mailBusy = true; state.mailNextAt = performance.now() + 1100;
-    state.mailStatus = job.kind === 'test' ? '正在發送測試郵件' : '正在發送死亡通知'; renderMailStatus();
+    const label = job.kind === 'test' ? '測試郵件' : job.kind === 'digest' ? '死亡通知摘要' : '死亡通知';
+    state.mailStatus = `正在發送${label}`; renderMailStatus();
     const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15000);
     try {
       const response = await fetch(EMAILJS_ENDPOINT, { method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(emailjsPayload(job.settings, job.event)), signal: controller.signal });
       if (!response.ok) throw { status: Number(response.status) };
       state.mailAccepted++;
-      state.mailStatus = job.kind === 'test' ? 'EmailJS 已接受測試郵件，請檢查收件箱' : `EmailJS 已接受${job.event.stage}第 ${job.event.lap} 周目的死亡通知`;
+      state.mailStatus = job.kind === 'test' ? 'EmailJS 已接受測試郵件，請檢查收件箱' : job.kind === 'digest'
+        ? `EmailJS 已接受死亡通知摘要（${job.event.death_count} 筆）` : `EmailJS 已接受${job.event.stage}第 ${job.event.lap} 周目的死亡通知`;
       log(state.mailStatus);
     } catch (error) {
       const reason = error?.status === 429 ? 'HTTP 429，請檢查 EmailJS 頻率／配額' : Number.isInteger(error?.status) ? `HTTP ${error.status}，請檢查 EmailJS 服務、模板和授權`
         : controller.signal.aborted ? '請求逾時，發送結果未確認' : '網路錯誤，發送結果未確認';
       // 逾時仍可能已被服務接受，因此不盲目重發同一局。
-      state.mailStatus = `${job.kind === 'test' ? '測試郵件' : '死亡通知'}未確認成功：${reason}；本次不自動重發`;
+      state.mailStatus = `${label}未確認成功：${reason}；本次不自動重發`;
       log(state.mailStatus);
     } finally {
       clearTimeout(timeout); state.mailBusy = false; state.mailNextAt = performance.now() + 1100; renderMailStatus();
@@ -671,7 +702,18 @@ self.onmessage = event => {
     try {
       maybeQueueDeath(state.game);
       while (state.mailQueue.length && state.mailQueue[0].kind === 'death' && (!cfg.deathMailEnabled || window.RO_DEAD || $('#ro-tab-dead'))) state.mailQueue.shift();
-      if (!state.mailBusy && now >= state.mailNextAt && state.mailQueue.length) void deliverMail(state.mailQueue.shift());
+      if (!cfg.deathMailEnabled && state.mailDigest) saveMailDigest(null);
+      if (state.mailBusy || now < state.mailNextAt) return;
+      if (state.mailQueue.length) { void deliverMail(state.mailQueue.shift()); return; }
+      const digest = state.mailDigest;
+      if (!digest || mailDigestRemaining(now, digest) > 0 || window.RO_DEAD || $('#ro-tab-dead') || mailSettingsError(mailSettings)) return;
+      const omitted = digest.count - digest.messages.length;
+      const header = `本批單人遠征死亡 ${digest.count} 次。${omitted ? `以下列出最近 ${digest.messages.length} 次。` : ''}`;
+      const details = digest.messages.map((message, i) => `第 ${omitted + i + 1} 筆\n${message}`);
+      saveMailDigest(null);
+      void deliverMail({ kind: 'digest', settings: { ...mailSettings }, event: {
+        title: 'ro.hans幸存者助手：遠征死亡摘要', death_count: digest.count, message: [header, ...details].join('\n\n'),
+      } });
     } catch { state.mailStatus = '郵件通知檢查失敗，其他自動功能照常運行'; }
   }
   function renderProfiles() {
@@ -909,7 +951,7 @@ self.onmessage = event => {
     state.expeditionProbe = null; state.farmPlan = null;
     resetAutoSpeed();
     state.timedExit = null; state.savedBatch = null; state.savedHold = false; state.savedOpenAt = -Infinity; state.manualSelection = null;
-    state.magnets = []; state.lastMagnetAt = 0;
+    state.magnets = []; state.lastMagnetAt = 0; state.magnetsCollected = 0; state.pursuingMagnet = false;
     state.postRun = null; state.npcApproach = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -1606,10 +1648,28 @@ self.onmessage = event => {
     }
     return false;
   }
+  const magnetRun = g => g && Number.isFinite(g.time) && !g.coop && !g.endless && !g.story && !g.isStory && !g.replayMoves;
+  const magnetSecondsLeft = g => Math.max(0, Math.ceil(cfg.magnetInterval - (g.time - state.lastMagnetAt)));
+  function renderMagnetStatus(g) {
+    const status = ui.querySelector('#magnet-status');
+    status.hidden = !cfg.magnetInterval;
+    if (status.hidden) return;
+    const seconds = magnetRun(g) ? magnetSecondsLeft(g) : null;
+    let message;
+    if (!cfg.pickups) message = '請開啟安全拾取掉落物';
+    else if (!cfg.enabled) message = '助手已暫停';
+    else if (seconds === null || g.player?.dead || !visible($('#hud'))) message = '等待進入單人遠征';
+    else if (g.state !== 'playing' || visible($('#picker'))) message = `等待遊戲恢復 · 剩 ${seconds} 局內秒`;
+    else if (state.timedExit || state.bell) message = '目前優先處理遠征機制';
+    else if (seconds > 0) message = `還有 ${seconds} 局內秒`;
+    else if (state.magnets.some(item => item.magnet)) message = '磁鐵吸附中';
+    else message = state.pursuingMagnet ? '到時，正在引導拾取' : '到時，等待可接近的磁鐵';
+    status.textContent = `磁鐵 · ${message}${state.magnetsCollected ? ` · 本局已拾取 ${state.magnetsCollected} 次` : ''}`;
+  }
   function movement(now, shelter = null, cleanup = null) {
     const g = state.game;
     if (!g || !visible($('#hud')) || g.state !== 'playing' || g.player.dead || now < state.manualUntil || (document.hidden && !cfg.background) || (!document.hidden && editingSettings()) || g.replayMoves) { stopMove(); return; }
-    if (!cfg.dodge && !cfg.chests && !cfg.pickups && !cleanup) { stopMove(); return; }
+    if (!cfg.dodge && !cfg.chestHunt && !cfg.pickups && !cleanup) { stopMove(); return; }
     if (now - state.lastMove < 110 || g.time === state.lastGameTime) return;
     state.lastMove = now; state.lastGameTime = g.time;
     const p = g.player;
@@ -1641,24 +1701,26 @@ self.onmessage = event => {
       const cards = drops.filter(item => item.kind === 'card'); if (cards.length) drops = cards;
     }
     let magnetDue = null;
-    if (cfg.magnetInterval && cfg.pickups && !g.coop && !g.endless && !g.story && !g.isStory) {
+    state.pursuingMagnet = false;
+    if (cfg.magnetInterval && cfg.pickups && magnetRun(g)) {
       // 原生拾取會先標記 dead，再從陣列移除；走近或吸附中都不開始下一輪計時。
-      if (state.magnets.some(item => item.dead)) state.lastMagnetAt = g.time;
+      const collected = state.magnets.filter(item => item.dead).length;
+      if (collected) { state.lastMagnetAt = g.time; state.magnetsCollected += collected; }
       state.magnets = g.pickups.filter(item => item.kind === 'magnet' && !item.dead);
-      if (!cleanup) magnetDue = g.time - state.lastMagnetAt >= cfg.magnetInterval && !state.magnets.some(item => item.magnet);
+      if (!cleanup) magnetDue = magnetSecondsLeft(g) === 0 && !state.magnets.some(item => item.magnet);
     }
-    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), cleanup ? { ...cfg, pickups: true, chests: false } : cfg, enemies.slice(0, 100), magnetDue);
+    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), cleanup ? { ...cfg, pickups: true, chestHunt: false } : cfg, enemies.slice(0, 100), magnetDue);
     // 遊戲拾取判定使用玩家 y-20，所有掉落物目標需加回 20。
     for (const target of targets.slice(0, 5)) {
       const destination = { x: target.x, y: target.y };
-      if (!g.walk) { goal = destination; break; }
+      if (!g.walk) { goal = destination; state.pursuingMagnet = target.priority === -1; break; }
       if (state.route?.target !== target.pickup || state.route.until < now) {
         const [x, y] = g.walk.nearestWalkable(destination.x, destination.y);
         state.route = { target: target.pickup, until: now + 600, points: g.walk.pathTo(p.x, p.y, x, y) || [] };
       }
       while (state.route.points.length && Math.hypot(state.route.points[0].x - p.x, state.route.points[0].y - p.y) < 24) state.route.points.shift();
-      if (state.route.points.length) { goal = state.route.points[0]; break; }
-      if (Math.hypot(destination.x - p.x, destination.y - p.y) < 40) { goal = destination; break; }
+      goal = state.route.points[0] || (Math.hypot(destination.x - p.x, destination.y - p.y) < 40 ? destination : null);
+      if (goal) { state.pursuingMagnet = target.priority === -1; break; }
     }
     if (!cfg.dodge && !goal) { stopMove(); return; }
     const zones = readZones();
@@ -1788,6 +1850,7 @@ self.onmessage = event => {
     ui.querySelector('#toggle').classList.toggle('on', cfg.enabled);
     ui.querySelector('#mini').textContent = `ro.hans ${cfg.enabled ? '▶' : 'Ⅱ'}`;
     ui.querySelector('#status').textContent = `${cfg.enabled ? '運行中' : '已暫停'} · ${g ? `本局 ${g.state}` : state.bridge}\n${state.message}`;
+    renderMagnetStatus(g);
     const owned = ownedSkills();
     ui.querySelector('#owned').textContent = `本局技能 ${owned.length}/${cfg.skillSlots}（不含普攻）：` + (owned.map(id => SKILL_NAMES[id] || state.registry[id]?.name || id).join('、') || '等待進入遊戲');
     ui.querySelector('#fifth-field').hidden = cfg.skillSlots !== 5;
@@ -1828,6 +1891,10 @@ self.onmessage = event => {
       if (el.type === 'checkbox') el.checked = value;
       else if (el.type === 'radio') el.checked = Number(el.value) === value;
       else el.value = value;
+    }
+    for (const el of ui.querySelectorAll('[data-card-policy]')) {
+      const key = el.dataset.cardPolicy;
+      el.value = !cfg[key] ? 'manual' : [key, 'both'].includes(cfg.storedOpenMode) ? 'open' : 'pick';
     }
     for (const el of ui.querySelectorAll('[data-priority]')) {
       const slot = el.dataset.priority;
@@ -1895,7 +1962,7 @@ self.onmessage = event => {
     <section id="panel" hidden>
       <div class="top" id="drag-handle"><strong title="按住標題拖動">ro.hans幸存者助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
-      <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
+      <p id="magnet-status" class="hint" hidden></p>
       <p id="owned" class="hint"></p>
       <details><summary>職業配置與技能順序</summary>
       <label>編輯職業<select id="job-profile"></select></label><small id="profile-status"></small>
@@ -1909,14 +1976,16 @@ self.onmessage = event => {
       <small>火箭術／冰箭術／雷擊術的「增加目標數」升級固定優先於稀有度；同為目標數升級再比稀有度。本開關只調整其餘技能牌，寶箱遵守獨立優先級。</small>
       </details>
       <details><summary>遠征死亡郵件提醒（EmailJS）</summary>
-      <label><input data-setting="deathMailEnabled" type="checkbox"> 單人遠征死亡時發送郵件（獨立於助手啟動開關）</label>
+      <label><input data-setting="deathMailEnabled" type="checkbox"> 啟用單人遠征死亡郵件（可獨立運行）</label>
+      <label>合併通知間隔（分鐘，0＝逐封即時發送）<input data-setting="deathMailDigestMinutes" type="number" min="0" max="1440" step="1"></label>
+      <small>從首筆死亡開始計時，到時寄一封摘要。分頁保持開啟即可累積，重新整理後可繼續。</small>
       <label>收件郵箱<input data-mail="toEmail" type="email" maxlength="254" autocomplete="off" placeholder="你的收件郵箱"></label>
       <label>EmailJS Service ID<input data-mail="serviceId" maxlength="100" autocomplete="off" placeholder="service_xxx"></label>
       <label>EmailJS Template ID<input data-mail="templateId" maxlength="100" autocomplete="off" placeholder="template_xxx"></label>
       <label>EmailJS Public Key（公開密鑰）<input data-mail="publicKey" type="password" maxlength="200" autocomplete="off" placeholder="只需 Public Key，無需郵箱密碼或 Private Key"></label>
       <div class="buttons"><button id="mail-save">保存通知設定</button><button id="mail-test">發送測試郵件</button><button id="mail-clear">清空通知設定</button></div><small id="mail-status"></small>
       <p class="hint">EmailJS 模板：To Email 填 <code>{{to_email}}</code>，Subject 填 <code>{{title}}</code>，正文放 <code>{{message}}</code>。先保存設定，再發送測試郵件，收到後勾選死亡提醒。</p>
-      <small>每局死亡最多一封；通關、定時退圖、劇情／爬塔／組隊／PVP／錄像不發送。通知含職業、副本、周目、局內存活時間、等級及擊殺數，會送到 EmailJS。郵箱與服務參數只存本瀏覽器，不隨職業切換或通用配置導出；失敗／逾時不自動重發同一局。</small>
+      <small>每局死亡只記一次。通關、定時退圖、劇情／爬塔／組隊／PVP／錄像不計入。通知含職業、副本、周目、局內存活時間、等級及擊殺數，會送到 EmailJS。郵箱與服務參數只存本瀏覽器，不隨職業切換或通用配置導出；失敗／逾時不自動重發同一局。</small>
       </details>
       <details><summary>重抽設定</summary>
       <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
@@ -1924,14 +1993,14 @@ self.onmessage = event => {
       </details>
       <details><summary>新版技能／寶箱保存與開啟</summary>
       <div class="checkrow"><label><input data-native-save="skill" type="checkbox"> 遊戲：保存升級選卡</label><label><input data-native-save="chest" type="checkbox"> 遊戲：保存寶箱</label></div>
-      <label>已保存牌的自動開啟範圍<select data-setting="storedOpenMode"><option value="manual">手動開啟（只處理已打開的牌）</option><option value="skills">僅自動開技能牌</option><option value="chests">僅自動開寶箱</option><option value="both">技能牌＋寶箱</option></select></label>
+      <div class="row">${[['skills', '技能牌'], ['chests', '寶箱']].map(([key, label]) => `<label>${label}處理方式<select data-card-policy="${key}"><option value="manual">全程手動</option><option value="pick">只自動選已開啟的牌</option><option value="open">自動開啟並選牌</option></select></label>`).join('')}</div>
       <label><input data-setting="skillLevelGate" type="checkbox"> 技能：按局內角色等級，自動即選／保存</label>
       <label>角色達到幾級後保存技能<input data-setting="skillSaveAtLevel" type="number" min="1" max="99999" step="1"></label>
       <label><input data-setting="chestLevelGate" type="checkbox"> 寶箱：按五欄總等級，自動即選／保存</label>
       <label>寶箱總等級達到多少後保存<input data-setting="chestSaveAtTotal" type="number" min="1" max="99999" step="1"></label>
-      <small>兩項分別勾選、隨職業保存。未達標立即選牌，並自動拿出已保存的該類牌；達到閾值即保存，保留尚未選的牌。等級規則優先於上方自動範圍，仍受自動選技能／尋寶與寶箱選卡及助手啟動控制。角色看局內等級；寶箱首張＝1級、+N＝N+1級，空欄＝0，五欄相加。手動開啟可接管，不會擅自丟棄牌。</small>
+      <small>兩項分別勾選、隨職業保存。未達標立即選牌，並自動拿出已保存的該類牌；達到閾值即保存，保留尚未選的牌。等級規則優先於自動開啟設定，適用於啟動助手且未選「全程手動」的類型。角色看局內等級；寶箱首張＝1級、+N＝N+1級，空欄＝0，五欄相加。手動開啟可接管，不會擅自丟棄牌。</small>
       <div class="buttons"><button id="stored-skill">立即開技能牌</button><button id="stored-chest">立即開寶箱</button><button id="stored-keep">繼續保存目前牌</button></div>
-      <small id="stored-status"></small><br><small>保存開關與遊戲暫停選單同步，技能牌和寶箱分別保存、不丟棄。自動開啟仍需啟動助手並開啟該類自動選牌；預設由你手動開啟。只開一種時，原生連選若轉到另一種，助手會將其繼續保存。手動按「繼續保存」會暫緩本局自動開啟，按開啟／B 鍵或切換範圍可恢復；原生分頁可自由切換。面板按鈕先開所選類型，助手運行時限制連選範圍。保存偏好由遊戲全局保存，自動範圍隨職業保存。</small></details>
+      <small id="stored-status"></small><br><small>保存開關與遊戲暫停選單同步。啟動助手後，預設只自動選已開啟的牌。只開一種時，原生連選若轉到另一種，助手會將其繼續保存。手動按「繼續保存」會暫緩本局自動開啟，按開啟／B 鍵或切換範圍可恢復；原生分頁可自由切換。面板按鈕先開所選類型，助手運行時限制連選範圍。保存偏好由遊戲全局保存，自動範圍隨職業保存。</small></details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -1979,6 +2048,7 @@ self.onmessage = event => {
       <label>重抽用盡／達上限後<select data-setting="exhausted"><option value="best">從現有卡片選最優項</option><option value="wait">等待手動選擇</option></select></label>
       <small>使用遊戲原有重抽次數；不購買、不補充。每局剩餘次數以遊戲按鈕為準。</small></details>
       <details><summary>走位、拾取與運行設定</summary>
+      <div class="checkrow"><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chestHunt" type="checkbox"> 自動尋寶</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
       <label>優先拾取磁鐵間隔（局內秒，0＝沿用一般拾取）<input data-setting="magnetInterval" type="number" min="0" max="600" step="1" placeholder="例如 30"></label>
       <small>單人遠征開啟安全拾取後生效。達到間隔便優先走向搜尋距離內可安全接近的磁鐵，實際拾取後重新計時。2 倍速時，30 局內秒約為 15 秒。</small>
       <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
@@ -2017,7 +2087,8 @@ self.onmessage = event => {
       if (error) { state.mailStatus = `${error}；仍使用上次已保存的通知設定`; log(state.mailStatus); renderMailStatus(); return; }
       try { localStorage.setItem(MAIL_STORAGE, JSON.stringify(next)); }
       catch { state.mailStatus = '通知設定保存失敗，仍使用原設定'; log(state.mailStatus); renderMailStatus(); return; }
-      mailSettings = next; state.mailQueue = []; state.mailStatus = '通知設定已保存，請先發送測試郵件'; populateMailSettings(); renderMailStatus(); log(state.mailStatus);
+      if (Object.keys(next).some(key => next[key] !== mailSettings[key])) { state.mailQueue = []; saveMailDigest(null); }
+      mailSettings = next; state.mailStatus = '通知設定已保存，請先發送測試郵件'; populateMailSettings(); renderMailStatus(); log(state.mailStatus);
     };
     ui.querySelector('#mail-test').onclick = () => {
       if (state.mailBusy || state.mailQueue.length) return;
@@ -2026,7 +2097,7 @@ self.onmessage = event => {
     ui.querySelector('#mail-clear').onclick = () => {
       if (state.mailBusy) return;
       try { localStorage.removeItem(MAIL_STORAGE); } catch { state.mailStatus = '無法清空通知設定，請檢查瀏覽器儲存'; renderMailStatus(); return; }
-      mailSettings = { ...MAIL_DEFAULTS }; cfg.deathMailEnabled = false; state.mailQueue = []; state.mailStatus = '通知設定已清空，死亡提醒已關閉';
+      mailSettings = { ...MAIL_DEFAULTS }; cfg.deathMailEnabled = false; state.mailQueue = []; saveMailDigest(null); state.mailStatus = '通知設定已清空，死亡提醒已關閉';
       save(); populateMailSettings(); populate(); log(state.mailStatus);
     };
     ui.querySelector('#job-profile').onchange = event => {
@@ -2054,9 +2125,17 @@ self.onmessage = event => {
     });
     ui.addEventListener('change', e => {
       const el = e.target;
-      if (el.dataset.setting) {
-        const key = el.dataset.setting, wasRepeat = cfg.repeat;
-        const patch = { ...cfg, [key]: el.type === 'checkbox' ? el.checked : el.value };
+      if (el.dataset.setting || el.dataset.cardPolicy) {
+        const key = el.dataset.setting || 'storedOpenMode', wasRepeat = cfg.repeat;
+        const patch = { ...cfg };
+        if (el.dataset.cardPolicy) {
+          const open = [];
+          for (const input of ui.querySelectorAll('[data-card-policy]')) {
+            patch[input.dataset.cardPolicy] = input.value !== 'manual';
+            if (input.value === 'open') open.push(input.dataset.cardPolicy);
+          }
+          patch.storedOpenMode = open.length === 2 ? 'both' : open[0] || 'manual';
+        } else patch[key] = el.type === 'checkbox' ? el.checked : el.value;
         if (key === 'progression' && patch.progression) patch.timedExitEnabled = false;
         cfg = validateConfig(patch); stopMove(); releaseTownKeys();
         if (key === 'storedOpenMode') { state.savedHold = false; if (state.savedBatch) state.savedBatch.mode = cfg.storedOpenMode; }
@@ -2064,7 +2143,8 @@ self.onmessage = event => {
         if (['timedExitEnabled', 'timedExitMinutes', 'cleanupSeconds', 'expedition', 'expeditionLap', 'progression'].includes(key)) state.timedExit = null;
         if (key === 'autoDoubleSpeed') resetAutoSpeed();
         if (key === 'magnetInterval') el.value = cfg.magnetInterval;
-        if (key === 'deathMailEnabled' && !cfg.deathMailEnabled) state.mailQueue = state.mailQueue.filter(job => job.kind !== 'death');
+        if (key === 'deathMailDigestMinutes') el.value = cfg.deathMailDigestMinutes;
+        if (key === 'deathMailEnabled' && !cfg.deathMailEnabled) { state.mailQueue = state.mailQueue.filter(job => job.kind !== 'death'); saveMailDigest(null); }
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
         if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.expeditionProbe = null; state.farmPlan = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
       }
@@ -2115,7 +2195,7 @@ self.onmessage = event => {
         stored: { mode: cfg.storedOpenMode, supported: !!nativeSaveApi(), skillSaving: nativeSaveApi()?.prefLv(), chestSaving: nativeSaveApi()?.prefCh(), counts: storedCounts(g, picker && pickerKind(picker)), batch: state.savedBatch?.mode, manualHold: state.savedHold },
         town: { bridge:state.townBridge, sceneAge:state.townScene ? Math.round(performance.now()-state.townScene.at) : null, yaw:state.townCamera?.yaw,
           player:state.townScene?.player, npcs:state.townScene?.npcs, target:state.npcApproach?.kind, distance:state.npcApproach?.distance },
-        email: { enabled: cfg.deathMailEnabled, configured: !mailSettingsError(mailSettings), queued: state.mailQueue.length, sending: state.mailBusy, accepted: state.mailAccepted, status: state.mailStatus },
+        email: { enabled: cfg.deathMailEnabled, configured: !mailSettingsError(mailSettings), queued: state.mailQueue.length, digestMinutes: cfg.deathMailDigestMinutes, digestCount: state.mailDigest?.count || 0, sending: state.mailBusy, accepted: state.mailAccepted, status: state.mailStatus },
         profile: { job: cfg.profileJob, gameJob: gameJobId(g), saved: Object.keys(cfg.jobProfiles) },
         timedExit: { enabled: cfg.timedExitEnabled, minutes: cfg.timedExitMinutes, cleanupSeconds: cfg.cleanupSeconds, phase: state.timedExit?.stage, pending: state.timedExit ? [...state.timedExit.items].filter(item => !item.dead).length : 0 },
         speed: { enabled: cfg.autoDoubleSpeed, native: g?.roSpd, applied: state.speedApplied, handled: state.speedDone, attempted: state.speedAttempted, status: state.speedStatus },

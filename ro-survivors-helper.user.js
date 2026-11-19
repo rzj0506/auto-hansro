@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.14.2
-// @description  第二章自動遠征、分等級拾取、磁鐵倒計時、尾王掉落收尾與死亡郵件摘要。
+// @version      1.14.3
+// @description  新版本提示可設定、基礎職業共用配置、第二章自動遠征與分等級拾取。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.14.2';
+  const VERSION = '1.14.3';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -50,7 +50,7 @@
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, chestHunt: true, pickups: true, background: true, autoDoubleSpeed: false,
     first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
-    profileJob: '', jobProfiles: {},
+    profileJob: '', jobProfiles: {}, gameUpdateAction: 'manual',
     chestFillFirst: true, chestSmartReroll: true,
     storedOpenMode: 'manual',
     deityOverrideEnabled: false, deityOverrides: '', deityBanishAfterPick: false, deityBanishTargets: '',
@@ -69,10 +69,30 @@
     'banish', 'banishBasic', 'banishExcludeEnabled', 'banishExclude', 'skillLevelGate', 'skillSaveAtLevel', 'chestLevelGate', 'chestSaveAtTotal',
     'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'storedOpenMode', 'priorities', 'deityOverrideEnabled', 'deityOverrides', 'deityBanishAfterPick', 'deityBanishTargets', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
   const profileSettings = config => Object.fromEntries(PROFILE_KEYS.map(key => [key, JSON.parse(JSON.stringify(config[key]))]));
+  const BASE_JOB_NAMES = {
+    swordsman: '劍士', mage: '魔法師', archer: '弓箭手', acolyte: '服事', thief: '盜賊',
+    merchant: '商人', taekwon: '跆拳少年', ninja: '忍者', gunslinger: '神槍手',
+  };
+  // HANS 原生職業表的直接前置職業。升階資料由基礎職業設定繼承。
+  const PROMOTION_PARENT = {
+    knight: 'swordsman', crusader: 'swordsman', wizard: 'mage', sage: 'mage', hunter: 'archer', bard: 'archer',
+    priest: 'acolyte', monk: 'acolyte', assassin: 'thief', rogue: 'thief', blacksmith: 'merchant', alchemist: 'merchant',
+    star_gladiator: 'taekwon', soul_linker: 'taekwon',
+    arch_bishop: 'priest', genetic: 'alchemist', guillotine_cross: 'assassin', kagerou: 'ninja', mechanic: 'blacksmith',
+    minstrel: 'bard', ranger: 'hunter', rebellion: 'gunslinger', royal_guard: 'crusader', rune_knight: 'knight',
+    shadow_chaser: 'rogue', sorcerer: 'sage', soul_reaper: 'soul_linker', star_emperor: 'star_gladiator',
+    sura: 'monk', warlock: 'wizard',
+  };
+  function baseJobId(id) {
+    while (Object.hasOwn(PROMOTION_PARENT, id)) id = PROMOTION_PARENT[id];
+    return Object.hasOwn(BASE_JOB_NAMES, id) ? id : '';
+  }
   const gameJobId = game => {
     const id = game?.promotion || game?.look?.promotion || game?.classDef?.id;
     return typeof id === 'string' && /^[a-z][a-z0-9_]{0,59}$/.test(id) ? id : '';
   };
+  const gameBaseJobId = game => baseJobId(game?.classDef?.id) || baseJobId(game?.look?.job) ||
+    baseJobId(gameJobId(game)) || baseJobId(game?.classDef?.base);
   const EMAILJS_ENDPOINT = 'https://api.emailjs.com/api/v1.0/email/send';
   const MAIL_DEFAULTS = { serviceId: '', templateId: '', publicKey: '', toEmail: '' };
   function normalizeMailSettings(raw) {
@@ -456,6 +476,7 @@ self.onmessage = event => {
     if (typeof raw.expedition === 'string') out.expedition = raw.expedition.slice(0, 150);
     if (Array.isArray(raw.banishExclude)) out.banishExclude = [...new Set(raw.banishExclude.filter(v => typeof v === 'string' && /^[\w.-]{1,100}$/.test(v)))].slice(0, 500);
     if (['greed', 'need', 'pass', 'manual'].includes(raw.partyRoll)) out.partyRoll = raw.partyRoll;
+    if (['manual', 'later', 'reload'].includes(raw.gameUpdateAction)) out.gameUpdateAction = raw.gameUpdateAction;
     if (['manual', 'skills', 'chests', 'both'].includes(raw.storedOpenMode)) out.storedOpenMode = raw.storedOpenMode;
     if (['card-deck', 'deck-card', 'card', 'deck', 'off'].includes(raw.rerollMode)) out.rerollMode = raw.rerollMode;
     if (['best', 'wait'].includes(raw.exhausted)) out.exhausted = raw.exhausted;
@@ -471,6 +492,29 @@ self.onmessage = event => {
       }
     }
     return out;
+  }
+  function restoreConfig(raw) {
+    const config = validateConfig(raw);
+    const { profileJob: oldJob, jobProfiles } = config;
+    jobProfiles.shared ??= { ...profileSettings(oldJob ? DEFAULTS : config), label: '舊版共用備份' };
+    if (oldJob && oldJob !== 'shared' && !Object.hasOwn(jobProfiles, oldJob)) {
+      jobProfiles[oldJob] = { ...profileSettings(config), label: oldJob };
+    }
+    const activeJob = baseJobId(oldJob) || 'mage';
+    // 先採現有基礎檔案；缺少時以舊版正在編輯的職業優先，其餘仍可由匯出保留。
+    for (const id of new Set([oldJob, ...Object.keys(jobProfiles)])) {
+      const base = baseJobId(id);
+      if (base && !Object.hasOwn(jobProfiles, base)) {
+        jobProfiles[base] = { ...profileSettings(jobProfiles[id]), label: BASE_JOB_NAMES[base] };
+      }
+    }
+    jobProfiles[activeJob] ??= { ...profileSettings(jobProfiles.shared), label: BASE_JOB_NAMES[activeJob] };
+    const activeProfile = jobProfiles[activeJob];
+    // 匯入舊版或使用者手改的 JSON 時，保留作用中基礎職業明確給出的頂層設定。
+    if (oldJob === activeJob) {
+      for (const key of PROFILE_KEYS) if (Object.hasOwn(raw, key)) activeProfile[key] = config[key];
+    }
+    return { ...config, ...profileSettings(activeProfile), profileJob: activeJob };
   }
   function nextExpedition(stages, config, laps = []) {
     const index = stages.findIndex(s => s.id === config.expedition);
@@ -574,7 +618,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, chestCardIdentity, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, chestTotalLevels, levelSavePolicy, townWorldPlan, townNpcPositions, storedKindAllowed, storedCounts };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, LAP_LABELS, LAP_SUFFIXES, PROFILE_KEYS, profileSettings, gameJobId, gameBaseJobId, restoreConfig, timedExitDue, EMAILJS_ENDPOINT, MAIL_DEFAULTS, normalizeMailSettings, mailSettingsError, isExpeditionDeath, deathMailEvent, emailjsPayload, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, chestCardIdentity, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, appendPriorityTier, pickupPriority, pickupTargets, chestFilledSlots, rankChest, chestTargets, deityListTier, protectsDeity, deityBanishCandidate, deityOverrideCandidate, chestDecision, validateConfig, nextExpedition, gearOnlyBlocked, chooseFarmStage, pointSegmentDistance, insideZone, readBellShelters, chooseBellShelter, planMove, townDirection, totalSkillLevels, chestTotalLevels, levelSavePolicy, townWorldPlan, townNpcPositions, storedKindAllowed, storedCounts };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -584,8 +628,8 @@ self.onmessage = event => {
   const MAIL_DIGEST_STORAGE = 'ro-survivors-helper.mail-digest.v1';
   const MAIL_DIGEST_LIMIT = 40;
   const POSITION_STORAGE = 'ro-survivors-helper.panel-position.v1';
-  let cfg = validateConfig(DEFAULTS);
-  try { const saved = localStorage.getItem(STORAGE); if (saved) cfg = validateConfig(JSON.parse(saved)); } catch (error) { console.warn('[RO助手] 設定讀取失敗', error); }
+  let cfg = restoreConfig(DEFAULTS);
+  try { const saved = localStorage.getItem(STORAGE); if (saved) cfg = restoreConfig(JSON.parse(saved)); } catch (error) { console.warn('[RO助手] 設定讀取失敗', error); }
   let mailSettings = { ...MAIL_DEFAULTS };
   try { mailSettings = normalizeMailSettings(JSON.parse(localStorage.getItem(MAIL_STORAGE) || '{}')); } catch { /* 通知設定無效時等待重新填寫 */ }
   const state = {
@@ -605,7 +649,7 @@ self.onmessage = event => {
     postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false, npcApproach: null, nativeDispatch: false,
     townWorldViews: new WeakMap(), townWorldHooks: new WeakSet(), townScene: null, townCamera: null, townBridge: '等待原生廣場場景',
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
-    profileJobs: {}, runJob: '', timedExit: null, magnets: [], lastMagnetAt: 0, magnetsCollected: 0, pursuingMagnet: false,
+    runJob: '', versionDialogs: new WeakSet(), lastVersionReloadAt: 0, timedExit: null, magnets: [], lastMagnetAt: 0, magnetsCollected: 0, pursuingMagnet: false,
     deitySeen: new WeakMap(),
     offerBooks: new WeakMap(), activeOffer: null, savedBatch: null, savedHold: false, savedOpenAt: -Infinity, manualSelection: null,
     mailSeen: new WeakSet(), mailQueue: [], mailDigest: null, mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
@@ -622,8 +666,8 @@ self.onmessage = event => {
     state.logs = state.logs.slice(-50);
   }
   function save() {
-    const id = cfg.profileJob || 'shared';
-    cfg.jobProfiles[id] = { ...profileSettings(cfg), label: state.profileJobs[id]?.name || cfg.jobProfiles[id]?.label || (id === 'shared' ? '舊版共用備份' : id) };
+    const id = cfg.profileJob;
+    cfg.jobProfiles[id] = { ...profileSettings(cfg), label: BASE_JOB_NAMES[id] };
     try { localStorage.setItem(STORAGE, JSON.stringify(cfg)); } catch { log('設定無法儲存；請檢查瀏覽器儲存空間'); }
   }
   function populateMailSettings() {
@@ -722,28 +766,20 @@ self.onmessage = event => {
   function renderProfiles() {
     if (!ui) return;
     const select = ui.querySelector('#job-profile');
-    const ids = [...new Set(['shared', ...Object.keys(state.profileJobs), ...Object.keys(cfg.jobProfiles)])];
-    select.innerHTML = ids.map(id => `<option value="${esc(id)}">${esc(id === 'shared' ? '舊版共用備份' : state.profileJobs[id]?.name || cfg.jobProfiles[id]?.label || id)}${id === 'shared' ? '' : ` [${esc(id)}]`}</option>`).join('');
-    select.value = cfg.profileJob || 'shared';
-    ui.querySelector('#profile-status').textContent = `正在編輯：${select.selectedOptions[0]?.textContent || cfg.profileJob}。技能、寶箱及重抽／放逐／保存觸發條件與自動開啟範圍分職業保存。`;
+    if (!select.options.length) select.innerHTML = Object.entries(BASE_JOB_NAMES).map(([id, name]) => `<option value="${id}">${name} [${id}]</option>`).join('');
+    select.value = cfg.profileJob;
   }
-  function switchProfile(id, definition = {}) {
+  function switchProfile(id) {
+    if (!Object.hasOwn(BASE_JOB_NAMES, id)) return;
     save();
-    if (id && !Object.hasOwn(cfg.jobProfiles, id)) {
-      const inherited = definition.base && cfg.jobProfiles[definition.base] || (definition.start === 'firebolt' ? cfg.jobProfiles.shared : null);
-      cfg.jobProfiles[id] = { ...(inherited ? profileSettings(inherited) : { ...profileSettings(DEFAULTS), first: '', second: '', third: '' }), label: definition.name || id };
-    }
-    const profile = cfg.jobProfiles[id || 'shared'];
-    cfg = validateConfig({ ...cfg, ...profileSettings(profile), profileJob: id });
+    cfg.jobProfiles[id] ??= { ...(id === 'mage' ? profileSettings(cfg.jobProfiles.shared)
+      : { ...profileSettings(DEFAULTS), first: '', second: '', third: '' }), label: BASE_JOB_NAMES[id] };
+    cfg = validateConfig({ ...cfg, ...profileSettings(cfg.jobProfiles[id]), profileJob: id });
     save(); resetPicker(); state.savedBatch = null; state.savedHold = false; populate();
   }
   function syncProfile(game) {
-    const id = gameJobId(game); if (!id) return;
-    const known = state.profileJobs[id];
-    const definition = known || { ...game.classDef, id, name: game.jobLabel || (game.classDef?.id === id ? game.classDef.name : id), base: game.classDef?.id !== id ? game.classDef?.id : game.classDef?.base };
-    state.profileJobs[id] = definition;
-    if (cfg.profileJob !== id) { switchProfile(id, definition); log(`已載入職業配置：${definition.name || id} [${id}]`); }
-    else renderProfiles();
+    const id = gameBaseJobId(game);
+    if (id && cfg.profileJob !== id) { switchProfile(id); log(`已載入基礎職業配置：${BASE_JOB_NAMES[id]} [${id}]`); }
   }
   function releaseBackgroundTicker() {
     const ticker = state.clockTicker, restart = state.clockTickerWasRunning;
@@ -945,7 +981,7 @@ self.onmessage = event => {
     maybeQueueDeath(g);
     rememberDeity(g);
     observeOffers(g);
-    const job = gameJobId(g);
+    const job = gameBaseJobId(g);
     if (job && (state.game !== g || state.runJob !== job)) { state.runJob = job; syncProfile(g); }
     if (state.game === g) return;
     stopMove(); state.game = g; state.route = null; state.bell = null; state.bellRoute = null; state.bellStatus = '尚無鐘罩機制'; state.velocities = new WeakMap(); resetPicker();
@@ -994,10 +1030,6 @@ self.onmessage = event => {
       state.assets = objects.find(v => v.icons instanceof Map && v.itemTextures instanceof Map) || null;
       installTownBridge(ns);
       state.settings = objects.find(v => typeof v.autoPause === 'boolean' && typeof v.muteHidden === 'boolean' && typeof v.lang === 'string') || null;
-      for (const value of Object.values(ns)) if (Array.isArray(value)) for (const job of value) {
-        if (job && typeof job.id === 'string' && typeof job.name === 'string' && typeof job.start === 'string' && typeof job.speed === 'number') state.profileJobs[job.id] = job;
-      }
-      renderProfiles();
       hooks.start.push(observeGame); hooks.tick.push(observeGame);
       syncBackground();
       state.bridge = '模組已連接，等待進入本局'; clearInterval(attachTimer); refreshCatalog();
@@ -1848,9 +1880,45 @@ self.onmessage = event => {
     state.speedAttempted = true; state.speedAttemptAt = now; button.click();
     if (isOn()) { state.speedDone = true; state.speedApplied = true; state.speedStatus = '本局已自動切換原生2x'; log(state.speedStatus); }
   }
+  const UPDATE_DIALOG_TEXT = [
+    ['新版本', '遊戲已推出新版本', '稍後', '重新整理'],
+    ['New version', 'There is a new version of the game', 'Later', 'Reload'],
+    ['Versión nueva', 'Hay una versión nueva del juego', 'Más tarde', 'Recargar'],
+    ['Nova versão', 'Há uma versão nova do jogo', 'Mais tarde', 'Recarregar'],
+  ];
+  const UPDATE_RELOAD_STORAGE = 'ro-survivors-helper.last-game-update-reload';
+  function gameUpdateStep() {
+    if (cfg.gameUpdateAction === 'manual' || window.RO_DEAD || $('#ro-tab-dead')) return false;
+    const dialog = $('#npc-dialog'), title = text(dialog, '#npc-name');
+    const translation = UPDATE_DIALOG_TEXT.find(entry => entry[0] === title);
+    if (!translation || !visible(dialog) || !text(dialog, '#npc-text').startsWith(translation[1])) return false;
+    const [later, reload, ...extra] = dialog.querySelectorAll('#npc-options button');
+    if (!later || !reload || extra.length || later.textContent.trim() !== translation[2] || reload.textContent.trim() !== translation[3] ||
+        !reload.classList.contains('primary')) return false;
+    const refresh = cfg.gameUpdateAction === 'reload', button = refresh ? reload : later;
+    if (state.versionDialogs.has(reload) || button.disabled || !visible(button) || typeof button.onclick !== 'function') return true;
+    if (refresh) {
+      const now = Date.now();
+      let previous = state.lastVersionReloadAt;
+      try { previous = Math.max(previous, Number(sessionStorage.getItem(UPDATE_RELOAD_STORAGE)) || 0); } catch {}
+      if (now - previous < 120000) {
+        state.versionDialogs.add(reload);
+        log('新版本提示再次出現，本分頁剛自動重新整理，請手動選擇');
+        return true;
+      }
+      state.lastVersionReloadAt = now;
+      try { sessionStorage.setItem(UPDATE_RELOAD_STORAGE, String(now)); } catch {}
+    }
+    state.versionDialogs.add(reload);
+    stopMove(); releaseTownKeys();
+    log(`遊戲新版本提示：已選擇${refresh ? '重新整理' : '稍後'}`);
+    button.click();
+    return true;
+  }
   function tick() {
     try {
       deathMailStep(performance.now());
+      if (gameUpdateStep()) return;
       if (!cfg.enabled) return;
       syncBackground();
       if ((!document.hidden && editingSettings()) || (document.hidden && !cfg.background)) { stopMove(); return; }
@@ -1997,9 +2065,9 @@ self.onmessage = event => {
       <p id="victory-loot-status" class="hint" hidden></p>
       <p id="owned" class="hint"></p>
       <details><summary>職業配置與技能順序</summary>
-      <label>編輯職業<select id="job-profile"></select></label><small id="profile-status"></small>
+      <label>基礎職業<select id="job-profile"></select></label>
       <button id="copy-shared-profile">把舊版共用備份複製到此職業</button>
-      <small>進入遊戲自動識別職業，一轉／二轉／三轉分開保存。手動切換編輯檔案會暫停助手；再次啟動時使用目前遊戲職業。新非法系職業預設不指定前三技，可自由選牌。</small>
+      <small>同一基礎職業的一轉、二轉與三轉共用技能與寶箱配置。手動切換編輯時暫停助手，啟動後自動載入目前角色的基礎職業。</small>
       ${['first', 'second', 'third'].map((key, i) => `<label>第 ${i + 1} 個技能（空白＝任意技能）<input data-setting="${key}" list="skills-list" placeholder="技能名稱或 ID"></label>`).join('')}
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
@@ -2089,6 +2157,8 @@ self.onmessage = event => {
       <small>單人遠征開啟安全拾取後生效。達到間隔便優先走向搜尋距離內可安全接近的磁鐵，實際拾取後重新計時。2 倍速時，30 局內秒約為 15 秒。</small>
       <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
+      <label>遊戲「新版本」提示<select data-setting="gameUpdateAction"><option value="manual">手動選擇</option><option value="later">自動選「稍後」</option><option value="reload">自動選「重新整理」</option></select></label>
+      <small>設定後在遊戲顯示原生新版本提示時生效，助手暫停也適用。</small>
       <label><input data-setting="autoDoubleSpeed" type="checkbox"> 進入單人遠征自動2倍速</label><small id="speed-status"></small>
       <small>需啟動助手，每局只設定一次；局中勾選也可生效。保留遊戲因卡頓降速及手動改速，取消勾選不改變當前速度。</small>
       <label>避怪安全距離<input data-setting="safety" type="number" min="25" max="200"></label>
@@ -2138,8 +2208,7 @@ self.onmessage = event => {
     };
     ui.querySelector('#job-profile').onchange = event => {
       cfg.enabled = false; stopMove(); releaseTownKeys(); syncBackground();
-      const id = event.target.value === 'shared' ? '' : event.target.value;
-      switchProfile(id, state.profileJobs[id] || {}); log('已切換編輯職業並暫停助手；啟動時會載入目前遊戲職業');
+      switchProfile(event.target.value); log('已切換基礎職業配置並暫停助手；啟動時載入目前角色的配置');
     };
     ui.querySelector('#copy-shared-profile').onclick = () => {
       if (!cfg.profileJob || !cfg.jobProfiles.shared) { log('請先選擇要接收備份的職業'); return; }
@@ -2243,7 +2312,7 @@ self.onmessage = event => {
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.timedExit = null; state.flow = null; state.savedBatch = null; state.savedHold = false; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = restoreConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); releaseTownKeys(); state.expeditionProbe = null; state.farmPlan = null; state.timedExit = null; state.flow = null; state.savedBatch = null; state.savedHold = false; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; resetAutoSpeed(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populateMailSettings(); populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.14.2
-// @description  第二章自動遠征、分等級拾取、磁鐵倒計時、尾王掉落收尾與死亡郵件摘要。
+// @version      1.14.3
+// @description  新版本提示可設定、基礎職業共用配置、第二章自動遠征與分等級拾取。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

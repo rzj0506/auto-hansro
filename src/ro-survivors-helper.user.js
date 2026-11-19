@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.13.2
-// @description  按角色／寶箱總等級即選或保存、重複遠征導航修正、原生保存適配、指定神格及職業配置。
+// @version      1.14.0
+// @description  支援第二章自動遠征、定時優先拾取磁鐵、可折疊的職業技能與寶箱設定。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.13.2';
+  const VERSION = '1.14.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -26,11 +26,16 @@
     ['prontera', '普隆德拉原野'], ['sewer', '普隆德拉地下水道'], ['sunken', '失事輪'], ['byalan', '柏伊亞嵐島'],
     ['payon', '斐揚森林'], ['payon_cave', '斐揚洞穴'], ['prt_castle', '普隆德拉城'], ['orcs', '獸人村'],
     ['pyramid', '夢羅克金字塔'], ['maze', '迷宮森林'], ['xmas', '聖誕節'], ['louyang', '元宵節'],
+    ['c2_gef', '吉芬地下迷宮'], ['c2_clock', '時計塔地下'], ['c2_abyss', '深淵之湖'],
+    ['c2_glast', '克雷斯特漢姆修道院'], ['c2_nif', '尼芙菲姆原野'],
   ];
-  // 2026-11-17 原生清單：六周目、12 張地圖；城堡是劇情關，後續周目跳過。
+  // HANS 0.14.0：第二章各自解鎖一至六周目，原生 data-i 仍是兩章共用的索引。
+  const CHAPTER_LABELS = ['第一章', '第二章'];
+  const stageChapter = id => id.startsWith('c2_') ? 2 : 1;
   const LAP_LABELS = ['一周目', '二周目', '三周目', '四周目', '五周目', '六周目'];
   const LAP_SUFFIXES = ['', '・改', '・改²', '・改³', '・改⁴', '・改⁵'];
-  const STAGE_ALIASES = ['Campos de Prontera', 'Alcantarillas de Prontera', 'Barco hundido', 'Isla de Byalan', 'Bosque de Payon', 'Cueva de Payon', 'Castillo de Prontera', 'Aldea orca', 'Pirámides de Morroc', 'Bosque laberinto', 'Navidad', 'Festival de los Faroles'];
+  const STAGE_ALIASES = ['Campos de Prontera', 'Alcantarillas de Prontera', 'Barco hundido', 'Isla de Byalan', 'Bosque de Payon', 'Cueva de Payon', 'Castillo de Prontera', 'Aldea orca', 'Pirámides de Morroc', 'Bosque laberinto', 'Navidad', 'Feria de faroles de Louyang',
+    'Mazmorra de Geffen', 'Sótano de la Torre del Reloj', 'Lago del Abismo', 'Monasterio de Glast Heim', 'Campos de Niflheim'];
   const ITEM_NAMES = {
     p_regen: '回復藥水', p_cd: '冷卻藥水', p_hp: '生命藥水', p_armor: '護甲藥水', p_area: '範圍藥水', p_pickup: '採集藥水', p_greed: '貪婪藥水', p_speed: '速度藥水', p_cast: '詠唱藥水', p_reach: '近戰範圍藥水', p_dmg: '傷害藥水',
     e_crit: '爆擊秘藥', e_dmg: '傷害秘藥', e_hp: '生命秘藥', e_critdmg: '爆擊傷害秘藥', e_surprise: '驚奇秘藥', e_dot: '持續傷害秘藥', e_dodge: '迴避秘藥', e_cast: '詠唱秘藥', e_area: '範圍秘藥', e_armor: '護甲秘藥',
@@ -55,7 +60,7 @@
     repeat: false, progression: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     timedExitEnabled: false, timedExitMinutes: 3, cleanupSeconds: 20,
     deathMailEnabled: false,
-    lootRange: 1800, partyRoll: 'greed',
+    lootRange: 1800, magnetInterval: 0, partyRoll: 'greed',
     rerollMode: 'card-deck', maxRerolls: 6, reserveCard: 0, reserveDeck: 0,
     exhausted: 'best', delay: 1000, safety: 65, chestRange: 2400,
     priorities: { potion: '', elixir: '', blessing: '', dish: '', deity: '' },
@@ -220,16 +225,17 @@
     return { value: tiers.map(group => group.join(' | ')).join('\n'), tier, added: true };
   }
   const pickupPriority = kind => kind === 'chest' || kind === 'magnet' ? 0 : 1;
-  function pickupTargets(pickups, player, zeny, cost, cfg, enemies = []) {
+  function pickupTargets(pickups, player, zeny, cost, cfg, enemies = [], magnetDue = null) {
     const candidates = pickups.filter(p => {
       if (p.dead || p.magnet || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
       if (p.kind === 'chest') return cfg.chests && zeny >= cost;
+      if (p.kind === 'magnet' && magnetDue === false) return false;
       return cfg.pickups && /^(gem_blue|gem_yellow|gem_red|zeny|loot|card|egg|meat|magnet)$/.test(p.kind);
-    }).map(p => ({ pickup: p, priority: pickupPriority(p.kind), x: p.x, y: p.y + 20, distance: Math.hypot(p.x - player.x, p.y + 20 - player.y) }))
+    }).map(p => ({ pickup: p, priority: p.kind === 'magnet' && magnetDue === true ? -1 : pickupPriority(p.kind), x: p.x, y: p.y + 20, distance: Math.hypot(p.x - player.x, p.y + 20 - player.y) }))
       .filter(t => t.distance < (t.pickup.kind === 'chest' ? cfg.chestRange : cfg.lootRange))
       .sort((a, b) => a.distance - b.distance);
     // 分別保留高優先級與一般目標，避免大量近距離寶石擠掉較遠的寶箱／磁鐵。
-    return [0, 1].flatMap(priority => candidates.filter(t => t.priority === priority).slice(0, 40)).map(t => {
+    return (magnetDue === true ? [-1, 0, 1] : [0, 1]).flatMap(priority => candidates.filter(t => t.priority === priority).slice(0, 40)).map(t => {
       const danger = enemies.reduce((sum, e) => sum + Math.max(0, cfg.safety + (e.radius || 18) - Math.hypot(t.x - e.x, t.y - e.y)) ** 2 * 12, 0);
       return { ...t, danger, score: t.distance + danger };
     }).sort((a, b) => Number(a.danger > 0) - Number(b.danger > 0) || (a.danger > 0 ? a.danger - b.danger : 0) || a.priority - b.priority || a.distance - b.distance);
@@ -449,7 +455,7 @@ self.onmessage = event => {
     if (['manual', 'skills', 'chests', 'both'].includes(raw.storedOpenMode)) out.storedOpenMode = raw.storedOpenMode;
     if (['card-deck', 'deck-card', 'card', 'deck', 'off'].includes(raw.rerollMode)) out.rerollMode = raw.rerollMode;
     if (['best', 'wait'].includes(raw.exhausted)) out.exhausted = raw.exhausted;
-    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
+    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['magnetInterval', 0, 600], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
       if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), lo, hi);
     }
     for (const slot of Object.keys(SLOT_NAMES)) if (typeof raw.priorities?.[slot] === 'string') out.priorities[slot] = raw.priorities[slot].slice(0, 5000);
@@ -583,7 +589,9 @@ self.onmessage = event => {
     manualUntil: 0, moveOwned: false, previous: null, velocities: new WeakMap(),
     lastMove: 0, lastGameTime: 0, errorCount: 0, zones: new Set(), observedGame: null,
     route: null, bell: null, bellRoute: null, bellStatus: '尚無鐘罩機制',
-    stages: [], laps: [], stageLap: 1, progressionStatus: '從所選地圖開始，已通關則自動推進', expeditionProbe: null, farmPlan: null, flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '', launchLap: 0,
+    stages: [], laps: [], stageChapter: 1, stageLap: 1,
+    stageCatalog: new Map(STAGES.map(([id, name]) => [id, { id, name, chapter: stageChapter(id) }])),
+    progressionStatus: '從所選地圖開始，已通關則自動推進', expeditionProbe: null, farmPlan: null, flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '', launchLap: 0,
     revealNode: null, revealAt: 0, revealClicked: false, lastListRead: 0,
     settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
@@ -591,7 +599,7 @@ self.onmessage = event => {
     postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false, npcApproach: null, nativeDispatch: false,
     townWorldViews: new WeakMap(), townWorldHooks: new WeakSet(), townScene: null, townCamera: null, townBridge: '等待原生廣場場景',
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
-    profileJobs: {}, runJob: '', timedExit: null,
+    profileJobs: {}, runJob: '', timedExit: null, magnets: [], lastMagnetAt: 0,
     deitySeen: new WeakMap(),
     offerBooks: new WeakMap(), activeOffer: null, savedBatch: null, savedHold: false, savedOpenAt: -Infinity, manualSelection: null,
     mailSeen: new WeakSet(), mailQueue: [], mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
@@ -831,19 +839,29 @@ self.onmessage = event => {
       label: tab.textContent.trim(), locked: tab.disabled || tab.getAttribute('aria-disabled') === 'true', selected: tab.classList.contains('primary'), tab }))
       .filter(l => Number.isInteger(l.lap) && l.lap >= 1 && l.lap <= 99);
   }
+  function readChapterTabs() {
+    return [...document.querySelectorAll('#ch-tabs button[data-chtab]')];
+  }
   function readStages() {
     const laps = readLapTabs();
-    state.laps = laps.map(({ tab, ...lap }) => lap);
     const cards = [...document.querySelectorAll('#stg-list .stg-card')];
     if (cards.length) {
+      const chapter = Number(readChapterTabs().find(tab => tab.classList.contains('primary'))?.dataset.chtab) || 1;
+      const chapterSize = STAGES.filter(([id]) => stageChapter(id) === chapter).length;
+      state.stageChapter = chapter;
       state.stageLap = laps.find(l => l.selected)?.lap || 1;
+      state.laps = laps.map(({ tab, ...lap }) => lap);
       state.stages = cards.map(card => {
         const title = card.querySelector('.stg-card-info b')?.cloneNode(true);
         // 特殊地圖標記是標題內的子元素，不能把「特殊關卡」當作地圖名稱。
         if (title) for (const child of [...title.children]) child.remove();
         const name = (title?.textContent.trim() || text(card, '.stg-card-info b')).replace(/[・·]\s*改(?:[²³⁴⁵⁶⁷⁸⁹0-9]+)?\s*$/, ''), index = Number(card.dataset.i);
-        const known = STAGES.find(([, n], i) => norm(n) === norm(name) || norm(STAGE_ALIASES[i]) === norm(name)) || (cards.length === STAGES.length ? STAGES[index] : null);
-        const id = card.dataset.stageId || card.dataset.stage || known?.[0] || `name:${name}`;
+        const displayedName = norm(name);
+        const byName = STAGES.find(([id, label], i) => stageChapter(id) === chapter && (norm(label) === displayedName || norm(STAGE_ALIASES[i]) === displayedName));
+        const byIndex = STAGES[index];
+        const id = card.dataset.stageId || card.dataset.stage || byName?.[0] ||
+          (cards.length === chapterSize && byIndex && stageChapter(byIndex[0]) === chapter ? byIndex[0] : `name:${name}`);
+        state.stageCatalog.set(id, { id, name, chapter });
         return { id, name, index, cleared: card.classList.contains('cleared'),
           storyOnly: id === 'prt_castle' || /劇情關|剧情关/.test(text(card, '.stg-state')),
           special: ['xmas', 'louyang'].includes(id) || !!card.querySelector('.ro-fs-badge'),
@@ -860,12 +878,17 @@ self.onmessage = event => {
         lapSelect.innerHTML = lapOptions.map(l => `<option value="${l.value}">${esc(l.label)}</option>`).join('');
       }
       lapSelect.value = String(cfg.expeditionLap);
-      const options = state.stages.length ? state.stages : STAGES.map(([id, name], index) => ({ id, name, index }));
+      const currentStages = new Map(state.stages.map(stage => [stage.id, stage]));
+      const options = [...state.stageCatalog.values()].map(stage => {
+        const current = state.stageLap === cfg.expeditionLap && state.stageChapter === stage.chapter && currentStages.get(stage.id);
+        return { ...stage, cleared: !!current?.cleared, locked: !!current?.locked };
+      });
       const select = ui.querySelector('[data-setting="expedition"]');
       const signature = JSON.stringify(options);
       if (select.dataset.signature !== signature) {
         select.dataset.signature = signature;
-        select.innerHTML = options.map(stage => `<option value="${esc(stage.id)}">${esc(stage.name)}${stage.cleared ? ' ✓' : stage.locked ? '（未開放）' : ''}</option>`).join('');
+        select.innerHTML = CHAPTER_LABELS.map((label, index) => `<optgroup label="${label}">${options.filter(stage => stage.chapter === index + 1)
+          .map(stage => `<option value="${esc(stage.id)}">${esc(stage.name)}${stage.cleared ? ' ✓' : stage.locked ? '（未開放）' : ''}</option>`).join('')}</optgroup>`).join('');
       }
       if (![...select.options].some(o => o.value === cfg.expedition)) select.insertAdjacentHTML('beforeend', `<option value="${esc(cfg.expedition)}">${esc(cfg.expedition.replace(/^name:/, ''))}（等待確認）</option>`);
       select.value = cfg.expedition;
@@ -886,6 +909,7 @@ self.onmessage = event => {
     state.expeditionProbe = null; state.farmPlan = null;
     resetAutoSpeed();
     state.timedExit = null; state.savedBatch = null; state.savedHold = false; state.savedOpenAt = -Infinity; state.manualSelection = null;
+    state.magnets = []; state.lastMagnetAt = 0;
     state.postRun = null; state.npcApproach = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -1515,15 +1539,22 @@ self.onmessage = event => {
       return true;
     }
     if (visible($('#stages'))) {
+      const cards = readStages();
+      const planned = state.farmPlan || state.expeditionProbe, wantedLap = planned?.lap || cfg.expeditionLap;
+      const wantedStage = planned?.stage || cfg.expedition;
+      const wantedChapter = state.stageCatalog.get(wantedStage)?.chapter || stageChapter(wantedStage);
+      if (state.stageChapter !== wantedChapter) {
+        const chapter = readChapterTabs().find(tab => Number(tab.dataset.chtab) === wantedChapter);
+        if (!chapter || chapter.disabled || chapter.getAttribute('aria-disabled') === 'true') { log(`等待遊戲開放${CHAPTER_LABELS[wantedChapter - 1]}`); return true; }
+        return flowClick(chapter, `chapter:${wantedChapter}`, now);
+      }
       const tabs = readLapTabs();
       const currentLap = tabs.find(t => t.selected)?.lap || 1;
-      const planned = state.farmPlan || state.expeditionProbe, wantedLap = planned?.lap || cfg.expeditionLap;
       if (currentLap !== wantedLap) {
         const target = tabs.find(t => t.lap === wantedLap);
         if (!target || target.locked) { log(`第 ${wantedLap} 周目尚未解鎖，等待手動處理`); return true; }
         return flowClick(target.tab, `lap:${wantedLap}`, now);
       }
-      const cards = readStages();
       const farming = !!state.farmPlan;
       let stage = planned && state.stages.find(s => s.id === planned.stage);
       if (!planned) {
@@ -1537,7 +1568,7 @@ self.onmessage = event => {
           if (decision.type === 'lap') return flowClick(tabs.find(t => t.lap === decision.lap).tab, `lap:${decision.lap}`, now);
         }
       }
-      const card = stage && cards.find(c => Number(c.dataset.i) === stage.index);
+      const card = stage && cards[state.stages.indexOf(stage)];
       if (!card) { log('找不到設定的副本；請重新讀取副本清單'); return true; }
       if (farming && (!stage.cleared || stage.locked || stage.storyOnly)) { log(`回刷副本目前無法出發：${stage.name}；等待手動處理`); return true; }
       if (!farming && state.expeditionProbe && stage.cleared) {
@@ -1609,7 +1640,14 @@ self.onmessage = event => {
       drops = g.pickups.filter(item => cleanup.has(item) && !item.dead);
       const cards = drops.filter(item => item.kind === 'card'); if (cards.length) drops = cards;
     }
-    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), cleanup ? { ...cfg, pickups: true, chests: false } : cfg, enemies.slice(0, 100));
+    let magnetDue = null;
+    if (cfg.magnetInterval && cfg.pickups && !g.coop && !g.endless && !g.story && !g.isStory) {
+      // 原生拾取會先標記 dead，再從陣列移除；走近或吸附中都不開始下一輪計時。
+      if (state.magnets.some(item => item.dead)) state.lastMagnetAt = g.time;
+      state.magnets = g.pickups.filter(item => item.kind === 'magnet' && !item.dead);
+      if (!cleanup) magnetDue = g.time - state.lastMagnetAt >= cfg.magnetInterval && !state.magnets.some(item => item.magnet);
+    }
+    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), cleanup ? { ...cfg, pickups: true, chests: false } : cfg, enemies.slice(0, 100), magnetDue);
     // 遊戲拾取判定使用玩家 y-20，所有掉落物目標需加回 20。
     for (const target of targets.slice(0, 5)) {
       const destination = { x: target.x, y: target.y };
@@ -1758,7 +1796,7 @@ self.onmessage = event => {
     ui.querySelector('#exclude-toggle').textContent = cfg.banishExcludeEnabled ? '停用排除放逐的技能' : '啟用排除放逐的技能';
     ui.querySelector('#exclude-toggle').classList.toggle('on', cfg.banishExcludeEnabled);
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
-    ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '自動遠征已啟用' : '自動遠征已關閉'} · ${cfg.progression ? '首通開荒' : '固定副本'} · 第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}${cfg.progression ? `\n${state.progressionStatus}` : ''}`;
+    ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '自動遠征已啟用' : '自動遠征已關閉'} · ${cfg.progression ? '首通開荒' : '固定副本'} · ${CHAPTER_LABELS[(state.stageCatalog.get(cfg.expedition)?.chapter || stageChapter(cfg.expedition)) - 1]}第 ${cfg.expeditionLap} 周目 · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}${cfg.progression ? `\n${state.progressionStatus}` : ''}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
     renderMailStatus();
     const native = nativeSaveApi();
@@ -1858,21 +1896,18 @@ self.onmessage = event => {
       <div class="top" id="drag-handle"><strong title="按住標題拖動">ro.hans幸存者助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
       <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
-      <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
       <p id="owned" class="hint"></p>
-      <details open><summary>各職業技能／寶箱配置</summary>
+      <details><summary>職業配置與技能順序</summary>
       <label>編輯職業<select id="job-profile"></select></label><small id="profile-status"></small>
       <button id="copy-shared-profile">把舊版共用備份複製到此職業</button>
-      <small>進入遊戲自動識別職業，一轉／二轉／三轉分開保存。手動切換編輯檔案會暫停助手；再次啟動時使用目前遊戲職業。新非法系職業預設不指定前三技，可自由選牌。</small></details>
+      <small>進入遊戲自動識別職業，一轉／二轉／三轉分開保存。手動切換編輯檔案會暫停助手；再次啟動時使用目前遊戲職業。新非法系職業預設不指定前三技，可自由選牌。</small>
       ${['first', 'second', 'third'].map((key, i) => `<label>第 ${i + 1} 個技能（空白＝任意技能）<input data-setting="${key}" list="skills-list" placeholder="技能名稱或 ID"></label>`).join('')}
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
       <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 個技能時生效"></label>
       <label><input data-setting="rarityFirst" type="checkbox"> 其餘技能牌先比稀有度，再比急速／傷害</label>
       <small>火箭術／冰箭術／雷擊術的「增加目標數」升級固定優先於稀有度；同為目標數升級再比稀有度。本開關只調整其餘技能牌，寶箱遵守獨立優先級。</small>
-      <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
-      <label><input data-setting="autoDoubleSpeed" type="checkbox"> 進入單人遠征自動2倍速</label><small id="speed-status"></small>
-      <small>需啟動助手，每局只設定一次；局中勾選也可生效。保留遊戲因卡頓降速及手動改速，取消勾選不改變當前速度。</small>
+      </details>
       <details><summary>遠征死亡郵件提醒（EmailJS）</summary>
       <label><input data-setting="deathMailEnabled" type="checkbox"> 單人遠征死亡時發送郵件（獨立於助手啟動開關）</label>
       <label>收件郵箱<input data-mail="toEmail" type="email" maxlength="254" autocomplete="off" placeholder="你的收件郵箱"></label>
@@ -1883,11 +1918,11 @@ self.onmessage = event => {
       <p class="hint">EmailJS 模板：To Email 填 <code>{{to_email}}</code>，Subject 填 <code>{{title}}</code>，正文放 <code>{{message}}</code>。先保存設定，再發送測試郵件，收到後勾選死亡提醒。</p>
       <small>每局死亡最多一封；通關、定時退圖、劇情／爬塔／組隊／PVP／錄像不發送。通知含職業、副本、周目、局內存活時間、等級及擊殺數，會送到 EmailJS。郵箱與服務參數只存本瀏覽器，不隨職業切換或通用配置導出；失敗／逾時不自動重發同一局。</small>
       </details>
-      <details open><summary>重抽設定</summary>
+      <details><summary>重抽設定</summary>
       <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 局內技能：允許重抽</label><label><input data-setting="chestReroll" type="checkbox"> 寶箱：允許重抽</label></div>
       <small>兩個開關獨立生效。技能僅在沒有合規選項時重抽整組，關閉後等待手動選擇；寶箱關閉後按現有牌優先級與下方處理方式選擇或等待。沿用下方重抽上限與保留次數。</small>
       </details>
-      <details open><summary>新版技能／寶箱保存與開啟</summary>
+      <details><summary>新版技能／寶箱保存與開啟</summary>
       <div class="checkrow"><label><input data-native-save="skill" type="checkbox"> 遊戲：保存升級選卡</label><label><input data-native-save="chest" type="checkbox"> 遊戲：保存寶箱</label></div>
       <label>已保存牌的自動開啟範圍<select data-setting="storedOpenMode"><option value="manual">手動開啟（只處理已打開的牌）</option><option value="skills">僅自動開技能牌</option><option value="chests">僅自動開寶箱</option><option value="both">技能牌＋寶箱</option></select></label>
       <label><input data-setting="skillLevelGate" type="checkbox"> 技能：按局內角色等級，自動即選／保存</label>
@@ -1906,10 +1941,11 @@ self.onmessage = event => {
       <details><summary>自動遠征／新周目開荒</summary>
       <label><input data-setting="repeat" type="checkbox"> 啟用自動遠征（固定重刷／開荒）</label>
       <label><input data-setting="progression" type="checkbox"> 首通開荒：通關後下一張，完成後自動進下一周目</label>
-      <label>遠征周目<select data-setting="expeditionLap">${LAP_LABELS.map((name, i) => `<option value="${i + 1}">${name}${LAP_SUFFIXES[i]}</option>`).join('')}</select></label>
-      <label>固定副本／開荒起點<select data-setting="expedition"></select></label><button id="read-stages">讀取遊戲副本清單</button>
+      <label>固定副本／開荒起點<select data-setting="expedition"></select></label>
+      <label>所選地圖的周目<select data-setting="expeditionLap">${LAP_LABELS.map((name, i) => `<option value="${i + 1}">${name}${LAP_SUFFIXES[i]}</option>`).join('')}</select></label>
+      <button id="read-stages">讀取遊戲副本清單</button>
       <div class="row"><label>自動開局上限（0＝不限）<input data-setting="repeatLimit" type="number" min="0" max="9999"></label><label>局間等待毫秒<input data-setting="repeatDelay" type="number" min="1500" max="60000"></label></div>
-      <p id="repeat-status" class="hint"></p><small>開荒需同時勾選自動遠征：從所選地圖開始，按原生已通關標記推進，失敗重試；包含聖誕節、元宵節，後續周目跳過劇情關。下一圖僅裝備分數不足時回刷當前已通關副本，每局結算後重查，達標即推進；跨周目也適用。沿用已勾選的結算穿裝／出售與開局上限；其他解鎖條件不足時等待。六周目完成後等待，關閉開荒則固定重刷。</small>
+      <p id="repeat-status" class="hint"></p><small>開荒需同時勾選自動遠征：從所選地圖開始，按原生已通關標記推進，失敗重試；包含聖誕節、元宵節，後續周目跳過劇情關。下一圖僅裝備分數不足時回刷當前已通關副本，每局結算後重查，達標即推進；跨周目也適用。沿用已勾選的結算穿裝／出售與開局上限；其他解鎖條件不足時等待。兩章周目各自解鎖，開荒沿所選章節推進。六周目完成後等待，關閉開荒則固定重刷。</small>
       <h4>定時退圖刷卡</h4><label><input data-setting="timedExitEnabled" type="checkbox"> 到時收尾拾取並結束結算（固定地圖，與開荒互斥）</label>
       <div class="row"><label>局內幾分鐘後收尾<input data-setting="timedExitMinutes" type="number" min="0.1" max="180" step="0.1"></label><label>收尾最長局內秒數<input data-setting="cleanupSeconds" type="number" min="0" max="120"></label></div>
       <button id="tree-card-preset">套用樹精卡循環：一周目斐揚森林／3分鐘</button><p id="timed-exit-status" class="hint"></p>
@@ -1921,7 +1957,7 @@ self.onmessage = event => {
       <label><input data-setting="autoSell" type="checkbox"> 打完副本後自動出售勾選品質的裝備</label>
       <div class="checkrow">${['普通', '優良', '稀有', '史詩', '傳說'].map((name, q) => `<label><input data-sell-quality="${q}" type="checkbox"> ${name}</label>`).join('')}</div>
       <small>總開關和品質均需勾選，預設全部關閉。不出售穿著中、受保護、初始、角色專屬、已插卡及已精煉裝備，不出售卡片。整理未完成前不開始下一場；取消重複遠征仍可單獨整理。</small></details>
-      <details open><summary>五欄位寶箱優先級</summary>
+      <details><summary>五欄位寶箱優先級</summary>
       <label><input data-setting="chestSmartReroll" type="checkbox"> 智能追首選：前兩欄整組、後三欄單張優先</label>
       <label><input data-setting="chestFillFirst" type="checkbox"> 同優先級先補空欄、讓神格成型，再均衡等級</label>
       <small id="chest-stage"></small><br><small>依已填欄位數分階段：先用整組快速選定任意兩欄，之後優先單張追其餘三欄首選；缺少目標類型或單張不可用時，剩餘整組仍可補齊。已有首選就保住它，不整組冒險；整組不可用時可改單張。先比配置優先級，普通物品鎖定品種後不對不可達目標浪費次數。</small>
@@ -1942,13 +1978,21 @@ self.onmessage = event => {
       <div class="row"><label>每箱重抽上限<input data-setting="maxRerolls" type="number" min="0" max="50"></label><label>保留單張次數<input data-setting="reserveCard" type="number" min="0" max="99"></label><label>保留整組次數<input data-setting="reserveDeck" type="number" min="0" max="99"></label></div>
       <label>重抽用盡／達上限後<select data-setting="exhausted"><option value="best">從現有卡片選最優項</option><option value="wait">等待手動選擇</option></select></label>
       <small>使用遊戲原有重抽次數；不購買、不補充。每局剩餘次數以遊戲按鈕為準。</small></details>
-      <details><summary>走位、操作與診斷</summary>
+      <details><summary>走位、拾取與運行設定</summary>
+      <label>優先拾取磁鐵間隔（局內秒，0＝沿用一般拾取）<input data-setting="magnetInterval" type="number" min="0" max="600" step="1" placeholder="例如 30"></label>
+      <small>單人遠征開啟安全拾取後生效。達到間隔便優先走向搜尋距離內可安全接近的磁鐵，實際拾取後重新計時。2 倍速時，30 局內秒約為 15 秒。</small>
+      <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
+      <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
+      <label><input data-setting="autoDoubleSpeed" type="checkbox"> 進入單人遠征自動2倍速</label><small id="speed-status"></small>
+      <small>需啟動助手，每局只設定一次；局中勾選也可生效。保留遊戲因卡頓降速及手動改速，取消勾選不改變當前速度。</small>
       <label>避怪安全距離<input data-setting="safety" type="number" min="25" max="200"></label>
       <label>尋找寶箱最大距離<input data-setting="chestRange" type="number" min="100" max="12000"></label>
       <label>尋找掉落物最大距離<input data-setting="lootRange" type="number" min="100" max="12000"></label>
       <label>組隊掉落分配<select data-setting="partyRoll"><option value="greed">貪婪</option><option value="need">需求</option><option value="pass">放棄</option><option value="manual">等待手動</option></select></label>
       <label>每次選卡等待毫秒<input data-setting="delay" type="number" min="850" max="5000"></label>
       <p class="hint">安全目標中優先寶箱與磁鐵，再拾取其他掉落。方向鍵／WASD 或畫面點擊後讓出操作 3 秒。背景模式會暫時關閉遊戲「離開自動暫停」，並用背景時鐘繼續運行；保留手動暫停。瀏覽器凍結／卸載分頁或電腦休眠仍會中斷。</p>
+      </details>
+      <details><summary>診斷與日誌</summary>
       <div class="buttons"><button id="rescan">重新識別</button><button id="diagnose">顯示診斷</button></div><pre id="log"></pre>
       </details>
       <details><summary>匯入／匯出設定</summary><textarea id="config" spellcheck="false" placeholder="在這裡貼上設定 JSON"></textarea><div class="buttons"><button id="export">匯出到上框</button><button id="import">匯入上框設定</button></div><small>匯入後保持暫停，按啟動即可使用。</small></details>
@@ -2019,6 +2063,7 @@ self.onmessage = event => {
         if (['skillLevelGate','skillSaveAtLevel','chestLevelGate','chestSaveAtTotal'].includes(key)) state.savedHold = false;
         if (['timedExitEnabled', 'timedExitMinutes', 'cleanupSeconds', 'expedition', 'expeditionLap', 'progression'].includes(key)) state.timedExit = null;
         if (key === 'autoDoubleSpeed') resetAutoSpeed();
+        if (key === 'magnetInterval') el.value = cfg.magnetInterval;
         if (key === 'deathMailEnabled' && !cfg.deathMailEnabled) state.mailQueue = state.mailQueue.filter(job => job.kind !== 'death');
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;
         if (['repeat', 'progression', 'expedition', 'expeditionLap'].includes(key)) { state.flow = null; state.launchStage = ''; state.launchLap = 0; state.launchPending = false; state.gameoverAt = null; state.expeditionProbe = null; state.farmPlan = null; state.progressionStatus = '從所選地圖開始，已通關則自動推進'; }
@@ -2074,7 +2119,7 @@ self.onmessage = event => {
         profile: { job: cfg.profileJob, gameJob: gameJobId(g), saved: Object.keys(cfg.jobProfiles) },
         timedExit: { enabled: cfg.timedExitEnabled, minutes: cfg.timedExitMinutes, cleanupSeconds: cfg.cleanupSeconds, phase: state.timedExit?.stage, pending: state.timedExit ? [...state.timedExit.items].filter(item => !item.dead).length : 0 },
         speed: { enabled: cfg.autoDoubleSpeed, native: g?.roSpd, applied: state.speedApplied, handled: state.speedDone, attempted: state.speedAttempted, status: state.speedStatus },
-        expedition: { progression: cfg.progression, status: state.progressionStatus, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap, probe: state.expeditionProbe, farming: state.farmPlan },
+        expedition: { progression: cfg.progression, status: state.progressionStatus, stageChapter: state.stageChapter, stageLap: state.stageLap, laps: state.laps, stages: state.stages, launchLap: state.launchLap, probe: state.expeditionProbe, farming: state.farmPlan },
         bell: { enabled: cfg.bellShelter, status: state.bellStatus, active: !!state.bell,
           ...(state.bell ? { x: state.bell.x, y: state.bell.y, radius: state.bell.radius, sealed: state.bell.sealed, struck: state.bell.struck, charge: state.bell.charge } : {}) },
         cards: visible(picker) && kind ? [...picker.querySelectorAll('#pk-cards .pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, sub: c.sub, identitySource: c.identitySource, rarity: c.rarity, lines: c.lines }; }) : [] };

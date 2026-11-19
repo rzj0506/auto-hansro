@@ -7,8 +7,9 @@ const stages = cleared => native.stages.map((s, index) => ({ ...s, index, locked
 const config = patch => C.validateConfig({ progression: true, expeditionLap: 4, expedition: 'payon_cave', ...patch });
 const laps = Array.from({ length: 6 }, (_, i) => ({ lap: i + 1, locked: false }));
 
-test('current native data matches all twelve map IDs, six lap labels and suffixes', () => {
-  assert.deepEqual(C.STAGES.map(s => s[0]), native.stages.map(s => s.id));
+test('both native chapters match all seventeen map IDs and six lap labels', () => {
+  // Chapter two IDs from HANS 0.14.0 (main-BNOcv2PN.hzb6eb53b9.js).
+  assert.deepEqual(C.STAGES.map(s => s[0]), [...native.stages.map(s => s.id), 'c2_gef', 'c2_clock', 'c2_abyss', 'c2_glast', 'c2_nif']);
   assert.equal(native.config.max, 6); assert.deepEqual(C.LAP_LABELS, native.config.label);
   assert.deepEqual(C.LAP_SUFFIXES, native.config.suffix);
   assert.equal(native.stages.find(s => s.id === 'prt_castle').storyOnly, true);

@@ -301,6 +301,98 @@ test('locked lap and unrelated dialogs never trigger departure or confirmation',
   } finally { f.close(); }
 });
 
+
+test('second-chapter expeditions switch chapter before lap and follow native progression with global map indices', async () => {
+  const f = await browserFixture({ repeat: true, progression: true, expeditionLap: 2, expedition: 'c2_gef' });
+  try {
+    townMarkup(f);
+    const d = f.w.document, stages = d.querySelector('#stages'), go = d.querySelector('#stg-go');
+    stages.insertAdjacentHTML('afterbegin', '<div id="ch-tabs"></div>');
+    stages.classList.remove('hidden');
+    let chapter = 1, lap = 1, selected = 0, locked = true;
+    const actions = [];
+    function render() {
+      d.querySelector('#ch-tabs').innerHTML = [1, 2].map(n => `<button data-chtab="${n}" class="${n === chapter ? 'primary' : ''}">${n === 1 ? '第一章' : '第二章'}${n === 2 && locked ? ' 🔒' : ''}</button>`).join('');
+      for (const tab of d.querySelectorAll('[data-chtab]')) tab.onclick = () => {
+        chapter = +tab.dataset.chtab; lap = 1; selected = chapter === 2 ? 12 : 0;
+        actions.push(`chapter:${chapter}`); render();
+      };
+      d.querySelector('#lap-tabs').innerHTML = Array.from({ length: chapter === 2 && !locked ? 2 : 1 }, (_, i) =>
+        `<button data-laptab="${i + 1}" class="${lap === i + 1 ? 'primary' : ''}">${C.LAP_LABELS[i]}</button>`).join('');
+      for (const tab of d.querySelectorAll('[data-laptab]')) tab.onclick = () => { lap = +tab.dataset.laptab; actions.push(`lap:${lap}`); render(); };
+      d.querySelector('#stg-list').innerHTML = C.STAGES.map(([id, name], index) => {
+        if ((id.startsWith('c2_') ? 2 : 1) !== chapter) return '';
+        const status = locked && chapter === 2 ? 'locked' : lap === 2 && index === 12 ? 'cleared' : 'open';
+        const title = index === 13 ? 'Sótano de la Torre del Reloj' : name;
+        return `<button class="stg-card ${status}${index === selected ? ' sel' : ''}" data-i="${index}"><span class="stg-card-info"><b>${title}${C.LAP_SUFFIXES[lap - 1]}</b></span></button>`;
+      }).join('');
+      for (const card of d.querySelectorAll('.stg-card')) card.onclick = () => {
+        selected = +card.dataset.i; actions.push(`stage:${selected}`); render();
+      };
+      go.disabled = locked && chapter === 2;
+    }
+    render();
+    go.onclick = () => { actions.push(`go:${chapter}:${lap}:${selected}`); stages.classList.add('hidden'); };
+    for (let i = 0; i < 3; i++) f.advance(1100);
+    assert.deepEqual(actions, ['chapter:2']);
+    assert.match(f.ui.querySelector('#status').textContent, /周目尚未解鎖/);
+    const select = f.ui.querySelector('[data-setting="expedition"]');
+    assert.equal(select.querySelector('optgroup[label="第二章"]').children.length, 5);
+    assert.equal(select.value, 'c2_gef');
+
+    locked = false; render();
+    for (let i = 0; i < 5; i++) f.advance(1100);
+    assert.deepEqual(actions, ['chapter:2', 'lap:2', 'stage:13', 'go:2:2:13']);
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).expedition, 'c2_clock');
+    assert.equal(select.querySelector('option[value="c2_clock"]').textContent, 'Sótano de la Torre del Reloj');
+  } finally { f.close(); }
+});
+
+test('skill fields and long settings start collapsed and still save through the expanded panel', async () => {
+  const f = await browserFixture({});
+  try {
+    const panel = f.ui.querySelector('#panel'), fields = ['first', 'second', 'third', 'fourth', 'fifth', 'skillSlots'];
+    const group = f.ui.querySelector('#job-profile').closest('details');
+    assert.equal(panel.querySelectorAll('details[open]').length, 0);
+    assert(fields.every(key => group.contains(panel.querySelector(`[data-setting="${key}"]`))));
+    group.querySelector('summary').click();
+    assert.equal(group.open, true);
+    f.setting('first', 'soul_strike');
+    group.querySelector('summary').click();
+    assert.equal(group.open, false);
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).first, 'soul_strike');
+  } finally { f.close(); }
+});
+
+test('magnet interval uses game time and restarts after native pickup', async () => {
+  const f = await browserFixture({ pickups: true, chests: false, magnetInterval: 30 });
+  try {
+    f.w.document.body.insertAdjacentHTML('beforeend', '<div id="hud"></div>');
+    const magnet = { kind: 'magnet', x: 860, y: 480 };
+    const otherMagnet = { kind: 'magnet', x: 900, y: 480 };
+    const gem = { kind: 'gem_blue', x: 430, y: 480 };
+    const moves = [];
+    Object.assign(f.game, { state: 'playing', stageId: 'prontera', pickups: [gem, magnet, otherMagnet],
+      zeny: 0, chestCost: () => 100, classDef: { speed: 100 }, stats: { speedMult: 1 },
+      buffValue: () => 0, bounds: { minX: 0, minY: 0, maxX: 1200, maxY: 1200 },
+      moveTo(x) { moves.push(x); } });
+    const step = (time, direction) => {
+      f.game.time = time; f.advance(1100);
+      assert(direction * (moves.pop() - f.game.player.x) > 0, `movement at game time ${time}`);
+    };
+    step(29, -1);
+    step(30, 1);
+    magnet.magnet = true;
+    step(31, -1);
+    magnet.dead = true; f.game.pickups = [gem, otherMagnet];
+    step(32, -1);
+    step(61, -1);
+    step(62, 1);
+    f.setting('magnetInterval', 0);
+    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).magnetInterval, 0);
+  } finally { f.close(); }
+});
+
 function equipmentUi(f, inventory, equipped) {
   townMarkup(f); const w = f.w, d = w.document, events = [];
   const character = { id: 'test', inventory, equipped };
@@ -754,7 +846,7 @@ test('native six-lap UI reads all new maps, badges and suffixes and persists pro
     const s = expeditionScenario(f);
     f.w.document.querySelector('[data-laptab="6"]').click(); f.advance(1100);
     assert.equal(f.ui.querySelector('[data-setting="expeditionLap"]').options.length, 6);
-    assert.equal(f.ui.querySelector('[data-setting="expedition"]').options.length, 12);
+    assert.equal(f.ui.querySelector('[data-setting="expedition"]').options.length, 17);
     f.ui.querySelector('#diagnose').click(); const report = JSON.parse(f.ui.querySelector('#config').value);
     assert.equal(report.expedition.stageLap, 6);
     assert.equal(report.expedition.stages.find(s => s.id === 'xmas').name, '聖誕節');

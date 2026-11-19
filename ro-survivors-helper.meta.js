@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.13.2
-// @description  按角色／寶箱總等級即選或保存、重複遠征導航修正、原生保存適配、指定神格及職業配置。
+// @version      1.14.0
+// @description  支援第二章自動遠征、定時優先拾取磁鐵、可折疊的職業技能與寶箱設定。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none

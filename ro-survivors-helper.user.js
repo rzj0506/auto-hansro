@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.14.1
-// @description  第二章自動遠征、磁鐵拾取倒計時、技能／寶箱保存與死亡郵件摘要。
+// @version      1.14.2
+// @description  第二章自動遠征、分等級拾取、磁鐵倒計時、尾王掉落收尾與死亡郵件摘要。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.14.1';
+  const VERSION = '1.14.2';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -60,7 +60,7 @@
     repeat: false, progression: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     timedExitEnabled: false, timedExitMinutes: 3, cleanupSeconds: 20,
     deathMailEnabled: false, deathMailDigestMinutes: 30,
-    lootRange: 1800, magnetInterval: 0, partyRoll: 'greed',
+    lootRange: 1800, magnetInterval: 0, stopChestPickupAtTotal: 0, stopXpPickupAtLevel: 0, partyRoll: 'greed',
     rerollMode: 'card-deck', maxRerolls: 6, reserveCard: 0, reserveDeck: 0,
     exhausted: 'best', delay: 1000, safety: 65, chestRange: 2400,
     priorities: { potion: '', elixir: '', blessing: '', dish: '', deity: '' },
@@ -225,13 +225,16 @@
     return { value: tiers.map(group => group.join(' | ')).join('\n'), tier, added: true };
   }
   const pickupPriority = kind => kind === 'chest' || kind === 'magnet' ? 0 : 1;
-  function pickupTargets(pickups, player, zeny, cost, cfg, enemies = [], magnetDue = null) {
+  function pickupTargets(pickups, player, zeny, cost, cfg, enemies = [], magnetDue = null, { waitForChests = false, waitForXp = false, victory = false } = {}) {
     const candidates = pickups.filter(p => {
       if (p.dead || p.magnet || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
-      if (p.kind === 'chest') return cfg.chestHunt && zeny >= cost;
+      // 原生尾王拾取倒數期間會拒絕開箱。
+      if (p.kind === 'chest') return !victory && !waitForChests && cfg.chestHunt && zeny >= cost;
+      if (waitForXp && /^gem_(blue|yellow|red)$/.test(p.kind)) return false;
       if (p.kind === 'magnet' && magnetDue === false) return false;
-      return cfg.pickups && /^(gem_blue|gem_yellow|gem_red|zeny|loot|card|egg|meat|magnet)$/.test(p.kind);
-    }).map(p => ({ pickup: p, priority: p.kind === 'magnet' && magnetDue === true ? -1 : pickupPriority(p.kind), x: p.x, y: p.y + 20, distance: Math.hypot(p.x - player.x, p.y + 20 - player.y) }))
+      return (cfg.pickups || victory) && /^(gem_blue|gem_yellow|gem_red|zeny|loot|card|egg|meat|magnet)$/.test(p.kind);
+    }).map(p => ({ pickup: p, x: p.x, y: p.y + 20, distance: Math.hypot(p.x - player.x, p.y + 20 - player.y),
+      priority: p.kind === 'magnet' && magnetDue === true ? -1 : victory && /^(loot|card|egg)$/.test(p.kind) ? 0 : pickupPriority(p.kind) }))
       .filter(t => t.distance < (t.pickup.kind === 'chest' ? cfg.chestRange : cfg.lootRange))
       .sort((a, b) => a.distance - b.distance);
     // 分別保留高優先級與一般目標，避免大量近距離寶石擠掉較遠的寶箱／磁鐵。
@@ -456,7 +459,7 @@ self.onmessage = event => {
     if (['manual', 'skills', 'chests', 'both'].includes(raw.storedOpenMode)) out.storedOpenMode = raw.storedOpenMode;
     if (['card-deck', 'deck-card', 'card', 'deck', 'off'].includes(raw.rerollMode)) out.rerollMode = raw.rerollMode;
     if (['best', 'wait'].includes(raw.exhausted)) out.exhausted = raw.exhausted;
-    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['magnetInterval', 0, 600], ['deathMailDigestMinutes', 0, 1440], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
+    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['magnetInterval', 0, 600], ['stopChestPickupAtTotal', 0, 99999], ['stopXpPickupAtLevel', 0, 99999], ['deathMailDigestMinutes', 0, 1440], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
       if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), lo, hi);
     }
     for (const slot of Object.keys(SLOT_NAMES)) if (typeof raw.priorities?.[slot] === 'string') out.priorities[slot] = raw.priorities[slot].slice(0, 5000);
@@ -1648,18 +1651,38 @@ self.onmessage = event => {
     }
     return false;
   }
-  const magnetRun = g => g && Number.isFinite(g.time) && !g.coop && !g.endless && !g.story && !g.isStory && !g.replayMoves;
+  const isSoloPickupRun = g => g && Number.isFinite(g.time) && !g.coop && !g.endless && !g.story && !g.isStory && !g.replayMoves;
+  const victoryLootSeconds = g => isSoloPickupRun(g) && g.state !== 'over' && Number.isFinite(g.lootUntil) ? Math.max(0, Math.ceil(g.lootUntil - g.time)) : 0;
+  const pickupThresholdReached = (level, threshold) => threshold > 0 && Number.isInteger(level) && level >= threshold;
+  function renderPickupStatus(g) {
+    const seconds = victoryLootSeconds(g);
+    const victoryStatus = ui.querySelector('#victory-loot-status');
+    victoryStatus.hidden = !seconds || !cfg.enabled || g.player?.dead || !visible($('#hud'));
+    if (!victoryStatus.hidden) victoryStatus.textContent = `尾王收尾 · 剩 ${seconds} 局內秒自動拾取`;
+    const statuses = [];
+    if (!seconds && isSoloPickupRun(g) && !g.player?.dead && visible($('#hud'))) {
+      if (cfg.chestHunt && cfg.stopChestPickupAtTotal) {
+        const level = chestTotalLevels(ownedChestSlots());
+        statuses.push(`寶箱 ${level ?? '未讀取'}／${cfg.stopChestPickupAtTotal} · ${pickupThresholdReached(level, cfg.stopChestPickupAtTotal) ? '等磁鐵' : '主動尋寶'}`);
+      }
+      if (cfg.pickups && cfg.stopXpPickupAtLevel) {
+        statuses.push(`角色 ${g.level ?? '未讀取'}／${cfg.stopXpPickupAtLevel} · ${pickupThresholdReached(g.level, cfg.stopXpPickupAtLevel) ? '等磁鐵' : '主動拾取經驗'}`);
+      }
+    }
+    ui.querySelector('#pickup-threshold-status').textContent = statuses.join('｜');
+  }
   const magnetSecondsLeft = g => Math.max(0, Math.ceil(cfg.magnetInterval - (g.time - state.lastMagnetAt)));
   function renderMagnetStatus(g) {
     const status = ui.querySelector('#magnet-status');
     status.hidden = !cfg.magnetInterval;
     if (status.hidden) return;
-    const seconds = magnetRun(g) ? magnetSecondsLeft(g) : null;
+    const seconds = isSoloPickupRun(g) ? magnetSecondsLeft(g) : null;
     let message;
     if (!cfg.pickups) message = '請開啟安全拾取掉落物';
     else if (!cfg.enabled) message = '助手已暫停';
     else if (seconds === null || g.player?.dead || !visible($('#hud'))) message = '等待進入單人遠征';
     else if (g.state !== 'playing' || visible($('#picker'))) message = `等待遊戲恢復 · 剩 ${seconds} 局內秒`;
+    else if (victoryLootSeconds(g)) message = '尾王收尾時優先拾取';
     else if (state.timedExit || state.bell) message = '目前優先處理遠征機制';
     else if (seconds > 0) message = `還有 ${seconds} 局內秒`;
     else if (state.magnets.some(item => item.magnet)) message = '磁鐵吸附中';
@@ -1669,7 +1692,8 @@ self.onmessage = event => {
   function movement(now, shelter = null, cleanup = null) {
     const g = state.game;
     if (!g || !visible($('#hud')) || g.state !== 'playing' || g.player.dead || now < state.manualUntil || (document.hidden && !cfg.background) || (!document.hidden && editingSettings()) || g.replayMoves) { stopMove(); return; }
-    if (!cfg.dodge && !cfg.chestHunt && !cfg.pickups && !cleanup) { stopMove(); return; }
+    const victory = victoryLootSeconds(g) > 0;
+    if (!cfg.dodge && !cfg.chestHunt && !cfg.pickups && !cleanup && !victory) { stopMove(); return; }
     if (now - state.lastMove < 110 || g.time === state.lastGameTime) return;
     state.lastMove = now; state.lastGameTime = g.time;
     const p = g.player;
@@ -1702,14 +1726,20 @@ self.onmessage = event => {
     }
     let magnetDue = null;
     state.pursuingMagnet = false;
-    if (cfg.magnetInterval && cfg.pickups && magnetRun(g)) {
+    if (cfg.magnetInterval && (cfg.pickups || victory) && isSoloPickupRun(g)) {
       // 原生拾取會先標記 dead，再從陣列移除；走近或吸附中都不開始下一輪計時。
       const collected = state.magnets.filter(item => item.dead).length;
       if (collected) { state.lastMagnetAt = g.time; state.magnetsCollected += collected; }
       state.magnets = g.pickups.filter(item => item.kind === 'magnet' && !item.dead);
       if (!cleanup) magnetDue = magnetSecondsLeft(g) === 0 && !state.magnets.some(item => item.magnet);
     }
-    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), cleanup ? { ...cfg, pickups: true, chestHunt: false } : cfg, enemies.slice(0, 100), magnetDue);
+    const useThresholds = !victory && !cleanup && isSoloPickupRun(g);
+    const policy = { victory,
+      waitForChests: useThresholds && cfg.chestHunt && cfg.stopChestPickupAtTotal > 0 && pickupThresholdReached(chestTotalLevels(ownedChestSlots()), cfg.stopChestPickupAtTotal),
+      waitForXp: useThresholds && pickupThresholdReached(g.level, cfg.stopXpPickupAtLevel),
+    };
+    const pickupConfig = cleanup ? { ...cfg, pickups: true, chestHunt: false } : cfg;
+    const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), pickupConfig, enemies.slice(0, 100), victory ? true : magnetDue, policy);
     // 遊戲拾取判定使用玩家 y-20，所有掉落物目標需加回 20。
     for (const target of targets.slice(0, 5)) {
       const destination = { x: target.x, y: target.y };
@@ -1774,6 +1804,7 @@ self.onmessage = event => {
     const g = state.game;
     if (!cfg.timedExitEnabled || !g || g.state === 'over' || g.player.dead || !visible($('#hud'))) return false;
     if (g.coop || g.endless || g.story || g.isStory || g.replayMoves || window.__RO_SPD?.state?.().shown === false) { state.timedExit = null; return false; }
+    if (victoryLootSeconds(g) && state.timedExit?.stage !== 'ending') { state.timedExit = null; return false; }
     if (!state.timedExit && timedExitDue(g, cfg)) {
       state.timedExit = { stage: 'collect', at: g.time, items: new Set(g.pickups.filter(p => !p.dead && /^(card|loot|egg)$/.test(p.kind))), clicked: false };
       state.route = null; stopMove();
@@ -1830,7 +1861,7 @@ self.onmessage = event => {
       if (timedExitStep(now)) { state.errorCount = 0; return; }
       if (now - state.lastListRead > 1000) { state.lastListRead = now; if (visible($('#stages'))) readStages(); }
       if (bellStep(now)) { state.errorCount = 0; return; }
-      if (collectReveal(now)) return;
+      if (collectReveal(now, victoryLootSeconds(state.game) > 0)) return;
       if (levelSavingStep()) return;
       if (postRunStep(now)) return;
       if (repeatStep(now)) return;
@@ -1850,7 +1881,7 @@ self.onmessage = event => {
     ui.querySelector('#toggle').classList.toggle('on', cfg.enabled);
     ui.querySelector('#mini').textContent = `ro.hans ${cfg.enabled ? '▶' : 'Ⅱ'}`;
     ui.querySelector('#status').textContent = `${cfg.enabled ? '運行中' : '已暫停'} · ${g ? `本局 ${g.state}` : state.bridge}\n${state.message}`;
-    renderMagnetStatus(g);
+    renderMagnetStatus(g); renderPickupStatus(g);
     const owned = ownedSkills();
     ui.querySelector('#owned').textContent = `本局技能 ${owned.length}/${cfg.skillSlots}（不含普攻）：` + (owned.map(id => SKILL_NAMES[id] || state.registry[id]?.name || id).join('、') || '等待進入遊戲');
     ui.querySelector('#fifth-field').hidden = cfg.skillSlots !== 5;
@@ -1963,6 +1994,7 @@ self.onmessage = event => {
       <div class="top" id="drag-handle"><strong title="按住標題拖動">ro.hans幸存者助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
       <p id="magnet-status" class="hint" hidden></p>
+      <p id="victory-loot-status" class="hint" hidden></p>
       <p id="owned" class="hint"></p>
       <details><summary>職業配置與技能順序</summary>
       <label>編輯職業<select id="job-profile"></select></label><small id="profile-status"></small>
@@ -2049,6 +2081,10 @@ self.onmessage = event => {
       <small>使用遊戲原有重抽次數；不購買、不補充。每局剩餘次數以遊戲按鈕為準。</small></details>
       <details><summary>走位、拾取與運行設定</summary>
       <div class="checkrow"><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chestHunt" type="checkbox"> 自動尋寶</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
+      <label>寶箱五欄總等級達標後停止主動尋寶<input data-setting="stopChestPickupAtTotal" type="number" min="0" max="99999" step="1"></label>
+      <label>局內角色等級達標後停止主動拾取經驗<input data-setting="stopXpPickupAtLevel" type="number" min="0" max="99999" step="1"></label>
+      <small>兩項各自生效，填 0 關閉門檻。寶箱首張算 1 級，空欄算 0。單人遠征尾王擊倒後，原生倒數期間會優先拾取磁鐵、裝備、卡片與寵物蛋，並恢復主動拾取經驗。</small>
+      <p id="pickup-threshold-status" class="hint"></p>
       <label>優先拾取磁鐵間隔（局內秒，0＝沿用一般拾取）<input data-setting="magnetInterval" type="number" min="0" max="600" step="1" placeholder="例如 30"></label>
       <small>單人遠征開啟安全拾取後生效。達到間隔便優先走向搜尋距離內可安全接近的磁鐵，實際拾取後重新計時。2 倍速時，30 局內秒約為 15 秒。</small>
       <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
@@ -2142,7 +2178,7 @@ self.onmessage = event => {
         if (['skillLevelGate','skillSaveAtLevel','chestLevelGate','chestSaveAtTotal'].includes(key)) state.savedHold = false;
         if (['timedExitEnabled', 'timedExitMinutes', 'cleanupSeconds', 'expedition', 'expeditionLap', 'progression'].includes(key)) state.timedExit = null;
         if (key === 'autoDoubleSpeed') resetAutoSpeed();
-        if (key === 'magnetInterval') el.value = cfg.magnetInterval;
+        if (['magnetInterval', 'stopChestPickupAtTotal', 'stopXpPickupAtLevel'].includes(key)) el.value = cfg[key];
         if (key === 'deathMailDigestMinutes') el.value = cfg.deathMailDigestMinutes;
         if (key === 'deathMailEnabled' && !cfg.deathMailEnabled) { state.mailQueue = state.mailQueue.filter(job => job.kind !== 'death'); saveMailDigest(null); }
         if (key === 'repeat' && !wasRepeat && cfg.repeat) state.runsStarted = 0;

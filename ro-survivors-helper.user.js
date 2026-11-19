@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.14.3
+// @version      1.14.4
 // @description  新版本提示可設定、基礎職業共用配置、第二章自動遠征與分等級拾取。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.14.3';
+  const VERSION = '1.14.4';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -255,7 +255,7 @@
       return (cfg.pickups || victory) && /^(gem_blue|gem_yellow|gem_red|zeny|loot|card|egg|meat|magnet)$/.test(p.kind);
     }).map(p => ({ pickup: p, x: p.x, y: p.y + 20, distance: Math.hypot(p.x - player.x, p.y + 20 - player.y),
       priority: p.kind === 'magnet' && magnetDue === true ? -1 : victory && /^(loot|card|egg)$/.test(p.kind) ? 0 : pickupPriority(p.kind) }))
-      .filter(t => t.distance < (t.pickup.kind === 'chest' ? cfg.chestRange : cfg.lootRange))
+      .filter(t => t.priority === -1 || t.distance < (t.pickup.kind === 'chest' ? cfg.chestRange : cfg.lootRange))
       .sort((a, b) => a.distance - b.distance);
     // 分別保留高優先級與一般目標，避免大量近距離寶石擠掉較遠的寶箱／磁鐵。
     return (magnetDue === true ? [-1, 0, 1] : [0, 1]).flatMap(priority => candidates.filter(t => t.priority === priority).slice(0, 40)).map(t => {
@@ -589,13 +589,15 @@ self.onmessage = event => {
     for (let i = 0; i < 24; i++) candidates.push({ dx: Math.cos(i * Math.PI / 12), dy: Math.sin(i * Math.PI / 12), cap: sheltered ? shelter.radius * .5 : Infinity });
     const goal = target || p;
     const goalDistance = Math.hypot(goal.x - p.x, goal.y - p.y);
+    const magnet = target && scene.prioritizeMagnet;
     if (target && goalDistance > 0) candidates.push({ dx: (goal.x - p.x) / goalDistance, dy: (goal.y - p.y) / goalDistance, cap: goalDistance });
     let best = null;
     for (const c of candidates) {
-      let risk = 0, minClear = 1e6, valid = true;
+      let risk = 0, minClear = 1e6, valid = true, unsafe = false;
+      const travelLimit = magnet ? Math.min(c.cap ?? Infinity, goalDistance) : c.cap ?? Infinity;
       let last = p;
       for (let j = 1; j <= 6; j++) {
-        const t = j / 6 * horizon, travel = Math.min(speed * t, c.cap ?? Infinity), x = p.x + c.dx * travel, y = p.y + c.dy * travel;
+        const t = j / 6 * horizon, travel = Math.min(speed * t, travelLimit), x = p.x + c.dx * travel, y = p.y + c.dy * travel;
         if (b && (x < b.x0 + 6 || x > b.x1 - 6 || y < b.y0 + 6 || y > b.y1 - 6) || walkable && !walkable(last.x, last.y, x, y)) { valid = false; break; }
         if (sheltered && Math.hypot(x - shelter.x, y - shelter.y) > shelter.radius) { valid = false; break; }
         for (const e of enemies) {
@@ -604,15 +606,20 @@ self.onmessage = event => {
           minClear = Math.min(minClear, clear);
           risk += Math.max(0, cfg.safety - clear) ** 2 / (j + 2);
           // 採樣間的近身穿越也有代價。
-          if (pointSegmentDistance(ex, ey, last.x, last.y, x, y) < (e.radius || 18) + 12) risk += 20000;
+          if (pointSegmentDistance(ex, ey, last.x, last.y, x, y) < (e.radius || 18) + 12) {
+            risk += 20000; unsafe = true;
+          }
         }
-        for (const z of zones) if (insideZone(x, y, z)) risk += 60000;
+        for (const z of zones) if (insideZone(x, y, z)) { risk += 60000; unsafe = true; }
         last = { x, y };
       }
       if (!valid) continue;
       const distance = Math.hypot(last.x - goal.x, last.y - goal.y);
+      // 磁鐵優先推進，同時排除會撞怪或進入傷害預警的路線。
+      if (magnet && (unsafe || distance >= goalDistance - .5)) continue;
       const inertia = scene.previous ? c.dx * scene.previous.dx + c.dy * scene.previous.dy : 0;
-      const score = shelter && !sheltered ? Math.min(150000, risk * 10) + distance * 10000 - inertia * 6
+      const score = magnet ? distance + risk * .2 - inertia * 2
+        : shelter && !sheltered ? Math.min(150000, risk * 10) + distance * 10000 - inertia * 6
         : risk * 10 + distance * .35 - Math.min(180, minClear) * .2 - inertia * 6;
       if (!best || score < best.score) best = { ...c, x: last.x, y: last.y, score, risk };
     }
@@ -638,7 +645,7 @@ self.onmessage = event => {
     pickerNode: null, pickerType: '', chestToken: null, born: 0, used: 0, pending: null, skillUsed: 0,
     manualUntil: 0, moveOwned: false, previous: null, velocities: new WeakMap(),
     lastMove: 0, lastGameTime: 0, errorCount: 0, zones: new Set(), observedGame: null,
-    route: null, bell: null, bellRoute: null, bellStatus: '尚無鐘罩機制',
+    route: null, magnetRoutes: new WeakMap(), bell: null, bellRoute: null, bellStatus: '尚無鐘罩機制',
     stages: [], laps: [], stageChapter: 1, stageLap: 1,
     stageCatalog: new Map(STAGES.map(([id, name]) => [id, { id, name, chapter: stageChapter(id) }])),
     progressionStatus: '從所選地圖開始，已通關則自動推進', expeditionProbe: null, farmPlan: null, flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '', launchLap: 0,
@@ -649,7 +656,7 @@ self.onmessage = event => {
     postRun: null, finishedGame: null, townKeys: [], townPulse: null, townDispatch: false, npcApproach: null, nativeDispatch: false,
     townWorldViews: new WeakMap(), townWorldHooks: new WeakSet(), townScene: null, townCamera: null, townBridge: '等待原生廣場場景',
     speedDone: false, speedApplied: false, speedAttempted: false, speedAttemptAt: 0, speedStatus: '等待進入單人遠征',
-    runJob: '', versionDialogs: new WeakSet(), lastVersionReloadAt: 0, timedExit: null, magnets: [], lastMagnetAt: 0, magnetsCollected: 0, pursuingMagnet: false,
+    runJob: '', versionDialogs: new WeakSet(), lastVersionReloadAt: 0, timedExit: null, magnets: [], lastMagnetAt: 0, magnetsCollected: 0, magnetStatus: '',
     deitySeen: new WeakMap(),
     offerBooks: new WeakMap(), activeOffer: null, savedBatch: null, savedHold: false, savedOpenAt: -Infinity, manualSelection: null,
     mailSeen: new WeakSet(), mailQueue: [], mailDigest: null, mailBusy: false, mailNextAt: 0, mailStatus: '尚未發送郵件', mailAccepted: 0,
@@ -990,7 +997,7 @@ self.onmessage = event => {
     state.expeditionProbe = null; state.farmPlan = null;
     resetAutoSpeed();
     state.timedExit = null; state.savedBatch = null; state.savedHold = false; state.savedOpenAt = -Infinity; state.manualSelection = null;
-    state.magnets = []; state.lastMagnetAt = 0; state.magnetsCollected = 0; state.pursuingMagnet = false;
+    state.magnets = []; state.lastMagnetAt = 0; state.magnetsCollected = 0; state.magnetRoutes = new WeakMap(); state.magnetStatus = '';
     state.postRun = null; state.npcApproach = null; releaseTownKeys();
     syncBackground();
     state.zones.clear(); state.observedGame = g;
@@ -1718,8 +1725,26 @@ self.onmessage = event => {
     else if (state.timedExit || state.bell) message = '目前優先處理遠征機制';
     else if (seconds > 0) message = `還有 ${seconds} 局內秒`;
     else if (state.magnets.some(item => item.magnet)) message = '磁鐵吸附中';
-    else message = state.pursuingMagnet ? '到時，正在引導拾取' : '到時，等待可接近的磁鐵';
+    else message = state.magnetStatus || '到時，正在搜尋磁鐵';
     status.textContent = `磁鐵 · ${message}${state.magnetsCollected ? ` · 本局已拾取 ${state.magnetsCollected} 次` : ''}`;
+  }
+  function pickupWaypoint(g, target, now) {
+    if (!g.walk) return target;
+    const { player, walk } = g, magnet = target.priority === -1;
+    let route = magnet ? state.magnetRoutes.get(target.pickup) : state.route;
+    if (route?.target !== target.pickup || route.until < now) {
+      const [x, y] = walk.nearestWalkable(target.x, target.y);
+      // 磁鐵的終點必須落在原生吸附範圍內，避免一直走向隔牆的地點。
+      const radius = magnet ? (g.stats.pickupRadius ?? 40) + g.buffValue('pickup') : 0;
+      const points = (!magnet || Math.hypot(x - target.x, y - target.y) < radius)
+        ? walk.pathTo(player.x, player.y, x, y) || [] : [];
+      route = { target: target.pickup, until: now + 600, points };
+      if (magnet) state.magnetRoutes.set(target.pickup, route); else state.route = route;
+    }
+    const advanceDistance = magnet ? 8 : 24;
+    while (route.points.length > (magnet ? 1 : 0)
+      && Math.hypot(route.points[0].x - player.x, route.points[0].y - player.y) < advanceDistance) route.points.shift();
+    return route.points[0] || (!magnet && target.distance < 40 ? target : null);
   }
   function movement(now, shelter = null, cleanup = null) {
     const g = state.game;
@@ -1757,7 +1782,7 @@ self.onmessage = event => {
       const cards = drops.filter(item => item.kind === 'card'); if (cards.length) drops = cards;
     }
     let magnetDue = null;
-    state.pursuingMagnet = false;
+    state.magnetStatus = '';
     if (cfg.magnetInterval && (cfg.pickups || victory) && isSoloPickupRun(g)) {
       // 原生拾取會先標記 dead，再從陣列移除；走近或吸附中都不開始下一輪計時。
       const collected = state.magnets.filter(item => item.dead).length;
@@ -1772,29 +1797,38 @@ self.onmessage = event => {
     };
     const pickupConfig = cleanup ? { ...cfg, pickups: true, chestHunt: false } : cfg;
     const targets = shelter ? [] : pickupTargets(drops, p, g.zeny, g.chestCost(), pickupConfig, enemies.slice(0, 100), victory ? true : magnetDue, policy);
-    // 遊戲拾取判定使用玩家 y-20，所有掉落物目標需加回 20。
-    for (const target of targets.slice(0, 5)) {
-      const destination = { x: target.x, y: target.y };
-      if (!g.walk) { goal = destination; state.pursuingMagnet = target.priority === -1; break; }
-      if (state.route?.target !== target.pickup || state.route.until < now) {
-        const [x, y] = g.walk.nearestWalkable(destination.x, destination.y);
-        state.route = { target: target.pickup, until: now + 600, points: g.walk.pathTo(p.x, p.y, x, y) || [] };
-      }
-      while (state.route.points.length && Math.hypot(state.route.points[0].x - p.x, state.route.points[0].y - p.y) < 24) state.route.points.shift();
-      goal = state.route.points[0] || (Math.hypot(destination.x - p.x, destination.y - p.y) < 40 ? destination : null);
-      if (goal) { state.pursuingMagnet = target.priority === -1; break; }
-    }
-    if (!cfg.dodge && !goal) { stopMove(); return; }
-    const zones = readZones();
-    // 僅尋寶時仍評估路徑安全，怪物優先於拾箱。
-    const scene = { player: p, enemies: enemies.slice(0, 100), zones, target: goal, shelter, bounds: g.bounds, previous: state.previous,
+    const scene = { player: p, enemies: enemies.slice(0, 100), zones: readZones(), shelter, bounds: g.bounds, previous: state.previous,
       speed: g.classDef.speed * 1.3 * g.stats.speedMult * (1 + g.buffValue('speed')) * (1 - g.buffValue('slow')),
       walkable: g.walk ? (ax, ay, bx, by) => {
         if (!g.walk.walkable(bx, by)) return false;
         const [x, y] = g.walk.resolve(ax, ay, bx, by);
         return Math.hypot(x - bx, y - by) < 3;
       } : null };
-    const best = planMove(scene, cfg);
+    let best = null, magnetRouteFound = false;
+    if (!shelter && (magnetDue || victory)) {
+      const magnets = targets.filter(target => target.priority === -1);
+      for (const target of magnets) {
+        const waypoint = pickupWaypoint(g, target, now);
+        if (!waypoint) continue;
+        magnetRouteFound = true;
+        best = planMove({ ...scene, target: waypoint, prioritizeMagnet: true }, cfg);
+        if (!best) continue;
+        state.magnetStatus = `到時，正在引導拾取 · 距離 ${Math.round(target.distance)}`;
+        break;
+      }
+      if (!best) state.magnetStatus = magnetRouteFound ? '到時，磁鐵路線有危險，暫避'
+        : magnets.length ? '到時，磁鐵目前無可達路線' : '到時，地上沒有可拾取的磁鐵';
+    }
+    if (!best) {
+      if (!shelter && !magnetRouteFound) {
+        for (const target of targets.filter(t => t.priority !== -1).slice(0, 5)) {
+          goal = pickupWaypoint(g, target, now);
+          if (goal) break;
+        }
+      }
+      if (!cfg.dodge && !goal) { stopMove(); return; }
+      best = planMove({ ...scene, target: goal }, cfg);
+    }
     if (!best || !best.dx && !best.dy) { stopMove(); return; }
     // 只呼叫與滑鼠移動相同的尋路入口；角色仍以遊戲原速度行走。
     g.moveTo(best.x, best.y); state.moveOwned = true; state.previous = best;
@@ -2154,7 +2188,7 @@ self.onmessage = event => {
       <small>兩項各自生效，填 0 關閉門檻。寶箱首張算 1 級，空欄算 0。單人遠征尾王擊倒後，原生倒數期間會優先拾取磁鐵、裝備、卡片與寵物蛋，並恢復主動拾取經驗。</small>
       <p id="pickup-threshold-status" class="hint"></p>
       <label>優先拾取磁鐵間隔（局內秒，0＝沿用一般拾取）<input data-setting="magnetInterval" type="number" min="0" max="600" step="1" placeholder="例如 30"></label>
-      <small>單人遠征開啟安全拾取後生效。達到間隔便優先走向搜尋距離內可安全接近的磁鐵，實際拾取後重新計時。2 倍速時，30 局內秒約為 15 秒。</small>
+      <small>單人遠征開啟安全拾取後生效。達到間隔便搜尋全圖並優先走向可安全接近的磁鐵，實際拾取後重新計時。2 倍速時，30 局內秒約為 15 秒。</small>
       <label><input data-setting="bellShelter" type="checkbox"> 鐘罩倒數自動進罩（需開啟自動避怪）</label><small id="bell-status"></small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
       <label>遊戲「新版本」提示<select data-setting="gameUpdateAction"><option value="manual">手動選擇</option><option value="later">自動選「稍後」</option><option value="reload">自動選「重新整理」</option></select></label>

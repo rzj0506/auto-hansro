@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ro.hans幸存者助手
 // @namespace    ro-survivors-local-helper
-// @version      1.14.4
+// @version      1.14.5
 // @description  新版本提示可設定、基礎職業共用配置、第二章自動遠征與分等級拾取。
 // @homepageURL  https://github.com/rzj0506/auto-hansro
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-hansro/userscript-release/ro-survivors-helper.meta.js
@@ -15,9 +15,11 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.14.4';
+  const VERSION = '1.14.5';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
+  const SKILL_FIELDS = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'];
+  const SKILL_SLOT_OPTIONS = [4, 5, 6];
   const SLOT_NAMES = { potion: '藥水', elixir: '靈藥', blessing: '祝福', dish: '料理', deity: '神格' };
   const SLOT_ALIASES = { potion: ['藥水', 'potion', 'poción', 'poção'], elixir: ['靈藥', '秘藥', 'elixir'],
     blessing: ['祝福', 'blessing', 'bendición', 'bênção'], dish: ['料理', 'dish', 'plato', 'prato'], deity: ['神格', 'deity', 'divindade'] };
@@ -49,7 +51,7 @@
   };
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, bellShelter: true, chests: true, chestHunt: true, pickups: true, background: true, autoDoubleSpeed: false,
-    first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
+    first: 'firebolt', second: 'coldbolt', third: 'lightning', skillSlots: 4, fourth: '', fifth: '', sixth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
     profileJob: '', jobProfiles: {}, gameUpdateAction: 'manual',
     chestFillFirst: true, chestSmartReroll: true,
     storedOpenMode: 'manual',
@@ -65,7 +67,7 @@
     exhausted: 'best', delay: 1000, safety: 65, chestRange: 2400,
     priorities: { potion: '', elixir: '', blessing: '', dish: '', deity: '' },
   };
-  const PROFILE_KEYS = ['first', 'second', 'third', 'fourth', 'fifth', 'skillSlots', 'skills', 'rarityFirst', 'skillReroll',
+  const PROFILE_KEYS = [...SKILL_FIELDS, 'skillSlots', 'skills', 'rarityFirst', 'skillReroll',
     'banish', 'banishBasic', 'banishExcludeEnabled', 'banishExclude', 'skillLevelGate', 'skillSaveAtLevel', 'chestLevelGate', 'chestSaveAtTotal',
     'chests', 'chestReroll', 'chestSmartReroll', 'chestFillFirst', 'storedOpenMode', 'priorities', 'deityOverrideEnabled', 'deityOverrides', 'deityBanishAfterPick', 'deityBanishTargets', 'rerollMode', 'maxRerolls', 'reserveCard', 'reserveDeck', 'exhausted'];
   const profileSettings = config => Object.fromEntries(PROFILE_KEYS.map(key => [key, JSON.parse(JSON.stringify(config[key]))]));
@@ -186,11 +188,12 @@
     }
     return '';
   }
+  const skillSlotLimit = (cfg, game) => Math.min(cfg.skillSlots, game?.maxSkills || cfg.skillSlots);
   function chooseSkill(cards, owned, cfg, registry = {}) {
-    const fixed = [...new Set(['first', 'second', 'third'].map((key, i) => cfg[key] === undefined ? FIXED[i] : cfg[key]).filter(Boolean).map(v => skillId(v, registry) || v))];
+    const fixed = [...new Set(SKILL_FIELDS.slice(0, FIXED.length).map((key, i) => cfg[key] === undefined ? FIXED[i] : cfg[key]).filter(Boolean).map(v => skillId(v, registry) || v))];
     const extras = owned.filter(id => !fixed.includes(id));
-    const limit = Math.max(1, Math.min(5, Number(cfg.skillSlots) || 4));
-    const configured = [cfg.fourth, ...(limit === 5 ? [cfg.fifth] : [])].filter(Boolean).map(v => skillId(v, registry) || v);
+    const limit = clamp(Number(cfg.skillSlots) || DEFAULTS.skillSlots, 1, SKILL_FIELDS.length);
+    const configured = SKILL_FIELDS.slice(FIXED.length, limit).map(key => cfg[key]).filter(Boolean).map(v => skillId(v, registry) || v);
     const wanted = configured.filter(id => !owned.includes(id) && !fixed.includes(id));
     const eligible = cards.filter(c => {
       if (owned.includes(c.id)) return true;
@@ -467,11 +470,11 @@ self.onmessage = event => {
     if (Number.isInteger(Number(raw.expeditionLap)) && Number(raw.expeditionLap) >= 1 && Number(raw.expeditionLap) <= 99) out.expeditionLap = Number(raw.expeditionLap);
     for (const key of ['skillSaveAtLevel','chestSaveAtTotal']) if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), 1, 99999);
     if (Array.isArray(raw.sellQualities)) out.sellQualities = [...new Set(raw.sellQualities.filter(q => Number.isInteger(q) && q >= 0 && q <= 4))].sort();
-    for (const key of ['first', 'second', 'third', 'fourth', 'fifth']) if (typeof raw[key] === 'string') out[key] = raw[key].slice(0, 100).trim();
+    for (const key of SKILL_FIELDS) if (typeof raw[key] === 'string') out[key] = raw[key].slice(0, 100).trim();
     if (Number.isFinite(Number(raw.timedExitMinutes))) out.timedExitMinutes = clamp(Math.round(Number(raw.timedExitMinutes) * 10) / 10, .1, 180);
     if (Number.isFinite(Number(raw.cleanupSeconds))) out.cleanupSeconds = clamp(Math.round(Number(raw.cleanupSeconds)), 0, 120);
     if (out.timedExitEnabled) out.progression = false;
-    if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
+    if (SKILL_SLOT_OPTIONS.includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
     if (includeProfiles && typeof raw.chestHunt !== 'boolean' && typeof raw.chests === 'boolean') out.chestHunt = raw.chests;
     if (typeof raw.expedition === 'string') out.expedition = raw.expedition.slice(0, 150);
     if (Array.isArray(raw.banishExclude)) out.banishExclude = [...new Set(raw.banishExclude.filter(v => typeof v === 'string' && /^[\w.-]{1,100}$/.test(v)))].slice(0, 500);
@@ -901,7 +904,7 @@ self.onmessage = event => {
         syncPriorityTiers(slot);
       }
       ui.querySelector('#skills-list').innerHTML = Object.entries(state.registry).filter(([id]) => !id.startsWith('atk_')).map(([id, d]) => `<option value="${esc(`${d.name} [${id}]`)}"></option>`).join('');
-      for (const key of ['first', 'second', 'third', 'fourth', 'fifth']) {
+      for (const key of SKILL_FIELDS) {
         const el = ui.querySelector(`[data-setting="${key}"]`), id = skillId(cfg[key], state.registry);
         if (id && el !== ui.activeElement) el.value = `${SKILL_NAMES[id] || state.registry[id]?.name || id} [${id}]`;
       }
@@ -1331,7 +1334,7 @@ self.onmessage = event => {
         state.pending = { type: 'banish', at: now };
         banished.banish.click(); rememberOfferRedraw(kind); log(`放逐${banished.id === basic ? '普攻' : '已擁有技能'}：${banished.name}；本局不再出現其升級`); return;
       }
-      const limit = Math.min(cfg.skillSlots, state.game?.maxSkills || cfg.skillSlots);
+      const limit = skillSlotLimit(cfg, state.game);
       const selected = chooseSkill(cards, owned, { ...cfg, skillSlots: limit }, state.registry);
       if (selected) return pick(selected, now);
       const deck = deckButton(picker);
@@ -1985,8 +1988,9 @@ self.onmessage = event => {
     ui.querySelector('#status').textContent = `${cfg.enabled ? '運行中' : '已暫停'} · ${g ? `本局 ${g.state}` : state.bridge}\n${state.message}`;
     renderMagnetStatus(g); renderPickupStatus(g);
     const owned = ownedSkills();
-    ui.querySelector('#owned').textContent = `本局技能 ${owned.length}/${cfg.skillSlots}（不含普攻）：` + (owned.map(id => SKILL_NAMES[id] || state.registry[id]?.name || id).join('、') || '等待進入遊戲');
-    ui.querySelector('#fifth-field').hidden = cfg.skillSlots !== 5;
+    ui.querySelector('#owned').textContent = `本局技能 ${owned.length}/${skillSlotLimit(cfg, g)}（不含普攻）：` + (owned.map(id => SKILL_NAMES[id] || state.registry[id]?.name || id).join('、') || '等待進入遊戲');
+    ui.querySelector('#fifth-field').hidden = cfg.skillSlots < 5;
+    ui.querySelector('#sixth-field').hidden = cfg.skillSlots < 6;
     ui.querySelector('#banish-toggle').textContent = cfg.banish ? '停止放逐' : '啟動放逐';
     ui.querySelector('#banish-toggle').classList.toggle('on', cfg.banish);
     ui.querySelector('#exclude-toggle').textContent = cfg.banishExcludeEnabled ? '停用排除放逐的技能' : '啟用排除放逐的技能';
@@ -2102,10 +2106,11 @@ self.onmessage = event => {
       <label>基礎職業<select id="job-profile"></select></label>
       <button id="copy-shared-profile">把舊版共用備份複製到此職業</button>
       <small>同一基礎職業的一轉、二轉與三轉共用技能與寶箱配置。手動切換編輯時暫停助手，啟動後自動載入目前角色的基礎職業。</small>
-      ${['first', 'second', 'third'].map((key, i) => `<label>第 ${i + 1} 個技能（空白＝任意技能）<input data-setting="${key}" list="skills-list" placeholder="技能名稱或 ID"></label>`).join('')}
-      <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
+      ${SKILL_FIELDS.slice(0, FIXED.length).map((key, i) => `<label>第 ${i + 1} 個技能（空白＝任意技能）<input data-setting="${key}" list="skills-list" placeholder="技能名稱或 ID"></label>`).join('')}
+      <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="6"> 6 個（三轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
-      <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 個技能時生效"></label>
+      <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 或 6 個技能時生效"></label>
+      <label id="sixth-field" hidden>第六個技能（空白＝任意技能）<input data-setting="sixth" list="skills-list" placeholder="選擇 6 個技能時生效"></label>
       <label><input data-setting="rarityFirst" type="checkbox"> 其餘技能牌先比稀有度，再比急速／傷害</label>
       <small>火箭術／冰箭術／雷擊術的「增加目標數」升級固定優先於稀有度；同為目標數升級再比稀有度。本開關只調整其餘技能牌，寶箱遵守獨立優先級。</small>
       </details>
@@ -2137,7 +2142,7 @@ self.onmessage = event => {
       <small id="stored-status"></small><br><small>保存開關與遊戲暫停選單同步。啟動助手後，預設只自動選已開啟的牌。只開一種時，原生連選若轉到另一種，助手會將其繼續保存。手動按「繼續保存」會暫緩本局自動開啟，按開啟／B 鍵或切換範圍可恢復；原生分頁可自由切換。面板按鈕先開所選類型，助手運行時限制連選範圍。保存偏好由遊戲全局保存，自動範圍隨職業保存。</small></details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
-      <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
+      <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔技能欄位）</label>
       <p class="hint">啟動後，先對牌面中「已擁有」的技能／普攻使用遊戲放逐按鈕，再選技能。未擁有的新技能不放逐。排除名單啟用後，勾選的技能會保留；勾選「普攻（所有武器）」可統一保護普攻。</p>
       <small id="exclude-count"></small><input id="banish-filter" placeholder="搜尋排除技能：中文名稱或 ID"><div id="banish-list"></div>
       </details>

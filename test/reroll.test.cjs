@@ -357,16 +357,49 @@ test('second-chapter expeditions switch chapter before lap and follow native pro
 test('skill fields and long settings start collapsed and still save through the expanded panel', async () => {
   const f = await browserFixture({});
   try {
-    const panel = f.ui.querySelector('#panel'), fields = ['first', 'second', 'third', 'fourth', 'fifth', 'skillSlots'];
+    const panel = f.ui.querySelector('#panel'), fields = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'skillSlots'];
     const group = f.ui.querySelector('#job-profile').closest('details');
     assert.equal(panel.querySelectorAll('details[open]').length, 0);
     assert(fields.every(key => group.contains(panel.querySelector(`[data-setting="${key}"]`))));
     group.querySelector('summary').click();
     assert.equal(group.open, true);
     f.setting('first', 'soul_strike');
+    assert.equal(group.querySelector('#sixth-field').hidden, true);
+    group.querySelector('[data-setting="skillSlots"][value="6"]').click();
+    assert.equal(group.querySelector('#fifth-field').hidden, false);
+    assert.equal(group.querySelector('#sixth-field').hidden, false);
+    f.setting('sixth', 'napalm');
     group.querySelector('summary').click();
     assert.equal(group.open, false);
-    assert.equal(JSON.parse(f.w.localStorage.getItem(STORAGE)).first, 'soul_strike');
+    const saved = JSON.parse(f.w.localStorage.getItem(STORAGE));
+    assert.equal(saved.first, 'soul_strike');
+    assert.equal(saved.skillSlots, 6);
+    assert.equal(C.restoreConfig(saved).sixth, 'napalm');
+  } finally { f.close(); }
+});
+
+test('a third-job character can take its configured sixth skill and a second-job character stays capped at five', async () => {
+  const f = await browserFixture({
+    profileJob: 'mage', skillSlots: 6, fourth: 'soul_strike', fifth: 'storm_gust', sixth: 'napalm', skillReroll: false,
+  });
+  try {
+    Object.assign(f.game, {
+      classDef: { id: 'mage' }, promotion: 'wizard', maxSkills: 5,
+      slots: [...C.FIXED, 'soul_strike', 'storm_gust'],
+    });
+    f.hooks.tick[0](f.game);
+    assert.equal(f.picker('skill').pick, 0);
+    assert.match(f.ui.querySelector('#owned').textContent, /5\/5（不含普攻）/);
+
+    Object.assign(f.game, { promotion: 'warlock', maxSkills: 6 });
+    f.hooks.tick[0](f.game);
+    assert.equal(f.picker('skill').pick, 1);
+    f.game.slots.push('napalm');
+    f.advance(500);
+    assert.match(f.ui.querySelector('#owned').textContent, /6\/6（不含普攻）/);
+    const saved = JSON.parse(f.w.localStorage.getItem(STORAGE));
+    assert.equal(saved.profileJob, 'mage');
+    assert.equal(saved.jobProfiles.mage.sixth, 'napalm');
   } finally { f.close(); }
 });
 

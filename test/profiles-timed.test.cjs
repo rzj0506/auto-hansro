@@ -6,6 +6,9 @@ const config=patch=>C.validateConfig({...C.DEFAULTS,...patch});
 
 test('legacy config keeps three spells and new job-profile data is independently validated',()=>{
   const old=config({fourth:'soul_strike',priorities:{potion:'p_cd'}});
+  assert.equal(old.skillSlots, 4);
+  assert.equal(old.sixth, '');
+  assert.equal(config({ skillSlots: 5 }).skillSlots, 5);
   assert.deepEqual([old.first,old.second,old.third],C.FIXED);assert.equal(old.profileJob,'');assert.deepEqual(old.jobProfiles,{});
   const cfg=config({profileJob:'swordsman',jobProfiles:{mage:{first:'firebolt',priorities:{potion:'p_cd'}},swordsman:{first:'bash',firstGlobal:false,priorities:{potion:'p_hp'}}}});
   assert.equal(cfg.jobProfiles.swordsman.first,'bash');assert.equal(cfg.jobProfiles.swordsman.enabled,undefined);
